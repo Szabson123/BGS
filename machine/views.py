@@ -7,8 +7,14 @@ from rest_framework.generics import ListAPIView, CreateAPIView, GenericAPIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from .models import BreakDown, BreakDownMove
-from .serializers import BreakDownListSerializer, BreakDownCreateSerializer, BreakDownMove, BreakDownMovePostSerializer
+from .models import BreakDown, BreakDownMove, Machine
+from .serializers import BreakDownListSerializer, BreakDownCreateSerializer, BreakDownMove, BreakDownMovePostSerializer, MachineMainSerializer
+
+
+class MachineViewSet(viewsets.ModelViewSet):
+    serializer_class = MachineMainSerializer
+    queryset = Machine.objects.all()
+
 
 class BreakDownListView(ListAPIView):
     serializer_class = BreakDownListSerializer

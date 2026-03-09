@@ -15,6 +15,12 @@ class MachineSerializer(serializers.ModelSerializer):
         fields = ['id', 'name', 'alias']
 
 
+class MachineMainSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Machine
+        fields = ['id', 'name', 'alias', 'workshop']
+
+
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = CustomUser
