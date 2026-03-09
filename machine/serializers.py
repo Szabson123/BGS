@@ -25,7 +25,7 @@ class BreakDownMoveSerializer(serializers.ModelSerializer):
     user = UserSerializer(read_only=True)
     class Meta:
         model = BreakDownMove
-        fields = ['status', 'user']
+        fields = ['status', 'user', 'description']
 
 
 class BreakDownListSerializer(serializers.ModelSerializer):
@@ -42,4 +42,16 @@ class BreakDownListSerializer(serializers.ModelSerializer):
         if last_move:
             return BreakDownMoveSerializer(last_move[0]).data
         return None
+
+
+class BreakDownCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = BreakDown
+        fields = ['machine', 'priority', 'description']
+
+
+class BreakDownMovePostSerializer(serializers.Serializer):
+    type = serializers.CharField(max_length=255, required=True)
+    break_down = serializers.PrimaryKeyRelatedField(queryset=BreakDown.objects.all())
+    description = serializers.CharField(max_length=1024, required=False)
 

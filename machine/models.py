@@ -51,6 +51,7 @@ class BreakDownMove(models.Model):
     user = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True)
     status = models.CharField(max_length=2, choices=Status)
     time = models.DateTimeField(auto_now_add=True)
+    description = models.CharField(max_length=1024, null=True, blank=True)
 
     class Meta:
         ordering = ['-time']
