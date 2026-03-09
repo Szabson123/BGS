@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from .models import Workshop, Machine, BreakDown, BreakDownMove
+from .models import Workshop, Machine, BreakDown, BreakDownMove, MachineNotes
 from user.models import CustomUser
 
 class WorkshopSerializer(serializers.ModelSerializer):
@@ -13,6 +13,12 @@ class MachineSerializer(serializers.ModelSerializer):
     class Meta:
         model = Machine
         fields = ['id', 'name', 'alias']
+
+
+class MachineNotesSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = MachineNotes
+        fields = ['id', 'description']
 
 
 class MachineMainSerializer(serializers.ModelSerializer):
@@ -61,3 +67,18 @@ class BreakDownMovePostSerializer(serializers.Serializer):
     break_down = serializers.PrimaryKeyRelatedField(queryset=BreakDown.objects.all())
     description = serializers.CharField(max_length=1024, required=False)
 
+
+class FullBreakDownHistory(serializers.ModelSerializer):
+    reporter = UserSerializer(read_only=True)
+    history = BreakDownMoveSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = BreakDown
+        fields = ['id', 'date_added', 'priority', 'reporter', 'description', 'history']
+
+class MachineFullListSerializer(serializers.ModelSerializer):
+    notes = MachineNotesSerializer(many=True, read_only=True)
+    breakdowns = FullBreakDownHistory(many=True, read_only=True)
+    class Meta:
+        model = Machine
+        fields = ['id', 'notes', 'breakdowns']

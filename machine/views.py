@@ -6,14 +6,38 @@ from rest_framework import viewsets, status
 from rest_framework.generics import ListAPIView, CreateAPIView, GenericAPIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.decorators import action
 
 from .models import BreakDown, BreakDownMove, Machine
-from .serializers import BreakDownListSerializer, BreakDownCreateSerializer, BreakDownMove, BreakDownMovePostSerializer, MachineMainSerializer
+from .serializers import (BreakDownListSerializer, BreakDownCreateSerializer, BreakDownMove, BreakDownMovePostSerializer, MachineMainSerializer,
+                          MachineFullListSerializer)
 
 
 class MachineViewSet(viewsets.ModelViewSet):
     serializer_class = MachineMainSerializer
-    queryset = Machine.objects.all()
+
+    def get_queryset(self):
+        if self.action == 'machine_full_history':
+            return Machine.objects.select_related('workshop').prefetch_related(
+                'notes',
+                Prefetch(
+                    'breakdowns',
+                    BreakDown.objects.select_related('reporter').prefetch_related(
+                        Prefetch(
+                            'history',
+                            BreakDownMove.objects.select_related('user')
+                        )
+                    )
+                )
+            )
+        return Machine.objects.select_related('workshop').prefetch_related('breakdowns', 'notes')
+
+    @action(detail=True, methods=['get'], serializer_class=MachineFullListSerializer)
+    def machine_full_history(self, request, pk=None):
+        machine = self.get_object()
+        serializer = self.get_serializer(machine)
+
+        return Response(serializer.data)
 
 
 class BreakDownListView(ListAPIView):
@@ -63,3 +87,5 @@ class BreakDownMakeMove(GenericAPIView):
             description = description
         )
         return Response({"success": f"{obj.pk}"}, status=status.HTTP_201_CREATED)
+    
+

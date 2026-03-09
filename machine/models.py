@@ -12,9 +12,15 @@ class Machine(models.Model):
     workshop = models.ForeignKey(Workshop, on_delete=models.SET_NULL, null=True, blank=True, related_name='machines')
     name = models.CharField(max_length=255)
     alias = models.CharField(max_length=255, null=True, blank=True)
+    phase_id = models.CharField(max_length=24, null=True)
 
     def __str__(self):
         return self.name
+    
+
+class MachineNotes(models.Model):
+    machine = models.ForeignKey(Machine, on_delete=models.CASCADE, related_name='notes')
+    description = models.CharField(max_length=1025)
     
 
 class BreakDown(models.Model):
