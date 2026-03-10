@@ -83,3 +83,4 @@ class MachineFullListSerializer(serializers.ModelSerializer):
     class Meta:
         model = Machine
         fields = ['id', 'notes', 'breakdowns']
+        
