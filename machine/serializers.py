@@ -63,7 +63,7 @@ class BreakDownCreateSerializer(serializers.ModelSerializer):
 
 
 class BreakDownMovePostSerializer(serializers.Serializer):
-    type = serializers.CharField(max_length=255, required=True)
+    status = serializers.CharField(max_length=255, required=True)
     break_down = serializers.PrimaryKeyRelatedField(queryset=BreakDown.objects.all())
     description = serializers.CharField(max_length=1024, required=False)
 

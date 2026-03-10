@@ -1,4 +1,5 @@
 from django.db import models
+from django.db.models import Prefetch
 from user.models import CustomUser
 
 class Workshop(models.Model):
@@ -6,6 +7,22 @@ class Workshop(models.Model):
 
     def __str__(self):
         return self.name
+    
+
+class MachineQuerySet(models.QuerySet):
+    def with_full_history(self):
+        return Machine.objects.select_related('workshop').prefetch_related(
+            'notes',
+            Prefetch(
+                'breakdowns',
+                BreakDown.objects.select_related('reporter').prefetch_related(
+                    Prefetch(
+                        'history',
+                        BreakDownMove.objects.select_related('user')
+                    )
+                )
+            )
+        )
 
 
 class Machine(models.Model):
@@ -13,6 +30,8 @@ class Machine(models.Model):
     name = models.CharField(max_length=255)
     alias = models.CharField(max_length=255, null=True, blank=True)
     phase_id = models.CharField(max_length=24, null=True)
+
+    objects = MachineQuerySet.as_manager()
 
     def __str__(self):
         return self.name
