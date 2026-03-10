@@ -61,9 +61,7 @@ class BreakDown(models.Model):
         ]
     
     def __str__(self):
-        last_move = self.history.first()
-        status = last_move.status if last_move else "No status"
-        return f"{self.machine.name} {self.date_added} {status}"
+        return f"{self.machine.name} {self.date_added}"
 
 
 class BreakDownMove(models.Model):

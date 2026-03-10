@@ -1,5 +1,6 @@
 from django.shortcuts import render
-from django.db.models import Prefetch
+from django.db.models import Prefetch, Window, F
+from django.db.models.functions import RowNumber
 from django.db import transaction
 
 from rest_framework import viewsets, status
@@ -10,7 +11,7 @@ from rest_framework.decorators import action
 from rest_framework.pagination import PageNumberPagination
 
 from .models import BreakDown, BreakDownMove, Machine
-from .serializers import (BreakDownListSerializer, BreakDownCreateSerializer, BreakDownMove, BreakDownMovePostSerializer, MachineMainSerializer,
+from .serializers import (BreakDownListSerializer, BreakDownCreateSerializer, BreakDownMovePostSerializer, MachineMainSerializer,
                           MachineFullListSerializer)
 
 from .services import create_breakdown_with_initial_move, move_breakdown
@@ -43,15 +44,22 @@ class BreakDownListView(ListAPIView):
     serializer_class = BreakDownListSerializer
     
     def get_queryset(self):
-        break_downs = (BreakDown.objects
-                   .select_related('reporter', 'machine')
+        statuses = BreakDownMove.objects \
+        .select_related('user') \
+        .annotate(
+            row_number=Window( # Deklaracja Wiaderka
+                expression=RowNumber(), # Deklaracja że będziemy numerować rzędy w "Wiaderku"
+                partition_by=[F('break_down_id')], # Liczby będą niezależne od obiektu BreakDown czyli bedziemy restować nasze liczby co breakdown
+                order_by=F('time').desc() # Jak numerujemy
+            )
+        ).filter(row_number=1) # Wycinamy wszystko oprócz naszej jedynki 2. W moim Django 6.0 działa natywnie w Postgresql
+
+        break_downs = BreakDown.objects \
+                   .select_related('reporter', 'machine') \
                    .prefetch_related(
-                       Prefetch(
-                           'history',
-                           BreakDownMove.objects.select_related('user')
-                       )
+                       Prefetch('history', queryset=statuses, to_attr='latest_status')
                    )
-        )
+        
         return break_downs
         
 

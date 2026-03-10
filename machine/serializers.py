@@ -43,17 +43,18 @@ class BreakDownMoveSerializer(serializers.ModelSerializer):
 class BreakDownListSerializer(serializers.ModelSerializer):
     machine = MachineSerializer(read_only=True)
     reporter = UserSerializer(read_only=True)
-    last_status = serializers.SerializerMethodField()
+    latest_status = serializers.SerializerMethodField()
 
     class Meta:
         model = BreakDown
-        fields = ['id', 'machine', 'date_added', 'priority', 'reporter', 'description', 'last_status']
+        fields = ['id', 'machine', 'date_added', 'priority', 'reporter', 'description', 'latest_status']
 
-    def get_last_status(self, obj):
-        last_move = obj.history.all()[:1]
-        if last_move:
-            return BreakDownMoveSerializer(last_move[0]).data
+    def get_latest_status(self, obj):
+        status = getattr(obj, 'latest_status', [])
+        if status:
+            return BreakDownMoveSerializer(status[0]).data
         return None
+
 
 
 class BreakDownCreateSerializer(serializers.ModelSerializer):

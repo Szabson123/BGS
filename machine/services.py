@@ -9,7 +9,7 @@ def create_breakdown_with_initial_move(user, breakdown_data):
         BreakDownMove.objects.create(
             break_down=breakdown,
             user=user,
-            status='RP'
+            status=BreakDownMove.Status.REPORTED
         )
     return breakdown
 
