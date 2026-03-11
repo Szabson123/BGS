@@ -23,7 +23,7 @@ class MachineQuerySet(models.QuerySet):
                 )
             )
         )
-
+    
 
 class Machine(models.Model):
     workshop = models.ForeignKey(Workshop, on_delete=models.SET_NULL, null=True, blank=True, related_name='machines')
@@ -44,14 +44,13 @@ class MachineNotes(models.Model):
 
 class BreakDown(models.Model):
     class Priority(models.TextChoices):
-        NONE = 'NONE', 'None'
         LOW = 'LOW', 'Low'
         MID = 'MID', 'Mid'
         HIGH = 'HIGH', 'High'
 
     machine = models.ForeignKey(Machine, on_delete=models.SET_NULL, null=True, blank=True, related_name='breakdowns')
     date_added = models.DateTimeField(auto_now_add=True)
-    priority = models.CharField(max_length=4, choices=Priority, default=Priority.NONE)
+    priority = models.CharField(max_length=4, choices=Priority, default=Priority.LOW)
     reporter = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='breakdowns')
     description = models.CharField(max_length=1024, null=True, blank=True)
 

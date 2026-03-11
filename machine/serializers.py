@@ -37,7 +37,7 @@ class BreakDownMoveSerializer(serializers.ModelSerializer):
     user = UserSerializer(read_only=True)
     class Meta:
         model = BreakDownMove
-        fields = ['status', 'user', 'description']
+        fields = ['status', 'user', 'description', 'time']
 
 
 class BreakDownListSerializer(serializers.ModelSerializer):
@@ -83,4 +83,3 @@ class MachineFullListSerializer(serializers.ModelSerializer):
     class Meta:
         model = Machine
         fields = ['id', 'notes', 'breakdowns']
-        
