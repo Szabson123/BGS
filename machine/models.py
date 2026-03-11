@@ -4,9 +4,15 @@ from user.models import CustomUser
 
 class Workshop(models.Model):
     name = models.CharField(max_length=255, unique=True)
+    owner = models.ForeignKey(CustomUser, on_delete=models.CASCADE, null=True, blank=True)
 
     def __str__(self):
         return self.name
+
+
+class WorkShopParticipant(models.Model):
+    user = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name='workshopparticipant')
+    workshop = models.ForeignKey(Workshop, on_delete=models.CASCADE, related_name='workshopparticipant')
     
 
 class MachineQuerySet(models.QuerySet):
