@@ -14,7 +14,7 @@ from .models import BreakDown, BreakDownMove, Machine
 from .serializers import (BreakDownListSerializer, BreakDownCreateSerializer, BreakDownMovePostSerializer, MachineMainSerializer,
                           MachineFullListSerializer)
 
-from .services import create_breakdown_with_initial_move, move_breakdown
+from .services import create_breakdown_with_initial_move, move_breakdown, MoveBreakDownService
 
 
 class CustomPagination(PageNumberPagination):
@@ -88,13 +88,9 @@ class BreakDownMakeMove(GenericAPIView):
         break_down = serializer.validated_data['break_down']
         description = serializer.validated_data['description']
 
-        obj = move_breakdown(
-            user=request.user,
-            status_val=move_status,
-            break_down=break_down,
-            description=description
-        )
+        service = MoveBreakDownService(user=self.request.user, status_val=move_status, break_down=break_down, description=description)
+        service.execute()
 
-        return Response({"success": f"{obj.pk}"}, status=status.HTTP_201_CREATED)
+        return Response({"success"}, status=status.HTTP_201_CREATED)
     
 
