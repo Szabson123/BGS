@@ -14,7 +14,7 @@ from .models import BreakDown, BreakDownMove, Machine
 from .serializers import (BreakDownListSerializer, BreakDownCreateSerializer, BreakDownMovePostSerializer, MachineMainSerializer,
                           MachineFullListSerializer)
 
-from .services import create_breakdown_with_initial_move, move_breakdown, MoveBreakDownService
+from .services import create_breakdown_with_initial_move, MoveBreakDownService
 
 
 class CustomPagination(PageNumberPagination):

@@ -13,17 +13,6 @@ def create_breakdown_with_initial_move(user, breakdown_data):
         )
     return breakdown
 
-def move_breakdown(user, status_val, break_down, description):
-    with transaction.atomic():
-        obj = BreakDownMove.objects.create(
-            break_down=break_down,
-            status=status_val,
-            user=user,
-            description=description
-        )
-
-        return obj
-    
 
 class MoveBreakDownService():
     def __init__(self, user, status_val, break_down, description):
@@ -56,7 +45,7 @@ class MoveBreakDownService():
                 workshop = self.break_down.machine.workshop
             )
         except:
-            raise ValidationError('You are not participant in this workshop you cant move breakdowsn')
+            raise ValidationError('You are not participant in this workshop you cant move breakdowns')
     
     def check_is_not_ended_breakdown(self):
         obj = BreakDownMove.objects.filter(
