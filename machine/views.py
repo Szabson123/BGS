@@ -54,13 +54,12 @@ class BreakDownListView(ListAPIView):
             )
         ).filter(row_number=1) # Wycinamy wszystko oprócz naszej jedynki 2. W moim Django 6.0 działa natywnie w Postgresql
 
-        break_downs = (BreakDown.objects 
-                   .select_related('reporter', 'machine') 
+        break_downs = (BreakDown.objects
+                   .select_related('reporter', 'machine')
                    .exclude(history__status=BreakDownMove.Status.ENDED) # Zapamiętać że to filtr na zakończone czyli nie mamy reaktywacji awari zakonczona to zakonczona
                    .prefetch_related(
                        Prefetch('history', queryset=statuses, to_attr='latest_status')
                    ))
-                   
         
         return break_downs
         
