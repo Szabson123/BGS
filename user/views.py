@@ -34,20 +34,27 @@ class LoginAPIView(APIView):
 
         login(request, user)
 
-        return Response(
-            {
-                "id": user.id,
-                "username": user.username,
-            }
-        )
+        prefetch_related_objects([user], 'maintroles', 'maintpermissions')
 
+        roles_list = list(user.maintroles.values_list('name', flat=True))
+        perms_list = list(user.maintpermissions.values_list('name', flat=True))
+
+        return Response({
+            "id": user.id,
+            "username": user.username,
+            "email": user.email,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "roles": roles_list,
+            "perms": perms_list
+        })
+    
 
 class LogoutAPIView(APIView):
     def post(self, request):
         logout(request)
         return Response({"detail": "Wylogowano"})
     
-
 
 class MeAPIView(APIView):
     permission_classes = [IsAuthenticated]
