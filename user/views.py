@@ -57,8 +57,8 @@ class MeAPIView(APIView):
 
         prefetch_related_objects([user], 'maintroles', 'maintpermissions')
 
-        roles_list = list(user.maintroles.values_list('name'))
-        perms_list = list(user.maintpermissions.values_list('name'))
+        roles_list = list(user.maintroles.values_list('name', flat=True))
+        perms_list = list(user.maintpermissions.values_list('name', flat=True))
 
         return Response({
             "id": user.id,
