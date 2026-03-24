@@ -1,10 +1,14 @@
 from django.contrib.auth import authenticate, login, logout
+from django.middleware.csrf import get_token
+from django.db.models import prefetch_related_objects
+
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
-from django.middleware.csrf import get_token
+
+from .models import MaintenancePermissions, MaintenanceRole
 
 
 class LoginAPIView(APIView):
@@ -50,12 +54,20 @@ class MeAPIView(APIView):
 
     def get(self, request):
         user = request.user
+
+        prefetch_related_objects([user], 'maintroles', 'maintpermissions')
+
+        roles_list = list(user.maintroles.values_list('name'))
+        perms_list = list(user.maintpermissions.values_list('name'))
+
         return Response({
             "id": user.id,
             "username": user.username,
             "email": user.email,
             "first_name": user.first_name,
             "last_name": user.last_name,
+            "roles": roles_list,
+            "perms": perms_list
         })
     
 

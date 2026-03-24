@@ -8,3 +8,13 @@ class CustomUser(AbstractUser):
 
     def __str__(self):
         return self.username
+
+
+class MaintenanceRole(models.Model):
+    user = models.ManyToManyField(CustomUser, related_name='maintroles')
+    name = models.CharField(max_length=255)
+
+
+class MaintenancePermissions(models.Model):
+    user = models.ManyToManyField(CustomUser, related_name='maintpermissions')
+    name = models.CharField(max_length=255)
