@@ -27,6 +27,7 @@ INSTALLED_APPS = [
 
     'user',
     'machine',
+    'operatorknowlage',
 ]
 
 MIDDLEWARE = [

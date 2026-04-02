@@ -8,8 +8,6 @@ from rest_framework.permissions import AllowAny
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 
-from .models import MaintenancePermissions, MaintenanceRole
-
 
 class LoginAPIView(APIView):
     permission_classes = [AllowAny]
