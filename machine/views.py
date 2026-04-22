@@ -13,7 +13,6 @@ from rest_framework.pagination import PageNumberPagination
 from .models import BreakDown, BreakDownMove, Machine
 from .serializers import (BreakDownListSerializer, BreakDownCreateSerializer, BreakDownMovePostSerializer, MachineMainSerializer,
                           MachineFullListSerializer)
-
 from .services import create_breakdown_with_initial_move, MoveBreakDownService
 
 

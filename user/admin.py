@@ -3,6 +3,5 @@ from .models import *
 
 
 admin.site.register(CustomUser)
-admin.site.register(MaintenancePermissions)
+admin.site.register(AppsRoleBGS)
 admin.site.register(MaintenanceRole)
-# Register your models here.
