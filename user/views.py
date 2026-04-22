@@ -32,7 +32,7 @@ class LoginAPIView(APIView):
 
         login(request, user)
 
-        prefetch_related_objects([user], 'maintroles', 'maintpermissions')
+        prefetch_related_objects([user], 'maintroles')
 
         return Response({
             "id": user.id,
@@ -56,7 +56,7 @@ class MeAPIView(APIView):
     def get(self, request):
         user = request.user
 
-        prefetch_related_objects([user], 'maintroles', 'maintpermissions')
+        prefetch_related_objects([user], 'maintroles')
 
         app_list = list(user.approles.values_list('name', flat=True))
         roles_list = list(user.maintroles.values_list('name', flat=True))

@@ -56,7 +56,6 @@ class BreakDownListSerializer(serializers.ModelSerializer):
         return None
 
 
-
 class BreakDownCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = BreakDown

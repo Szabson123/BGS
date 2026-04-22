@@ -2,18 +2,25 @@ from django.db import models
 from django.db.models import Prefetch
 from user.models import CustomUser
 
+
 class Workshop(models.Model):
     name = models.CharField(max_length=255, unique=True)
     owner = models.ForeignKey(CustomUser, on_delete=models.CASCADE, null=True, blank=True)
 
     def __str__(self):
         return self.name
-
+    
+# Komentarz -> kiedy jestes participantem to możesz awarie modyfikować jesli nie jestes to nie mozesz, curentworshop jest tylko do odczytu i zgłaszania awari
 
 class WorkShopParticipant(models.Model):
     user = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name='workshopparticipant')
     workshop = models.ForeignKey(Workshop, on_delete=models.CASCADE, related_name='workshopparticipant')
-    
+
+
+class CurrentWorkshop(models.Model):
+    user = models.OneToOneField(CustomUser, on_delete=models.CASCADE, related_name='currentworkshop')
+    workshop = models.ForeignKey(Workshop, on_delete=models.CASCADE, related_name='currentworkshop')
+
 
 class MachineQuerySet(models.QuerySet):
     def with_full_history(self):

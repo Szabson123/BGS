@@ -1,5 +1,5 @@
 from django.shortcuts import render
-from django.db.models import Prefetch, Window, F, Q
+from django.db.models import Prefetch, Window, F, Q, Case, When, Value, IntegerField
 from django.db.models.functions import RowNumber
 from django.db import transaction
 
@@ -12,7 +12,7 @@ from rest_framework.pagination import PageNumberPagination
 
 from .models import BreakDown, BreakDownMove, Machine
 from .serializers import (BreakDownListSerializer, BreakDownCreateSerializer, BreakDownMovePostSerializer, MachineMainSerializer,
-                          MachineFullListSerializer)
+                          MachineFullListSerializer, MachineSerializer)
 from .services import create_breakdown_with_initial_move, MoveBreakDownService
 
 
@@ -73,6 +73,33 @@ class BreakDownCreateView(CreateAPIView):
                 breakdown_data=serializer.validated_data
             )
 
+
+class BreakDownCreateMachineHelper(ListAPIView):
+    serializer_class = MachineSerializer
+    queryset = Machine.objects.none()
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+
+        if not hasattr(user, 'currentworkshop'):
+            return Machine.objects.none()
+        
+        current_workshop = user.currentworkshop.workshop
+        
+        recent_machine_ids = (BreakDown.objects.filter(reporter=user)
+                              .order_by('-date_added')
+                              .values_list('machine_id', flat=True)
+                              .distinct()[:3])
+        
+        return Machine.objects.filter(workshop=current_workshop).annotate(
+            priority_group=Case(
+                When(id__in=recent_machine_ids, then=Value(1)),
+                default=Value(0),
+                output_field=IntegerField()
+            )
+        ).order_by('-priority_group', 'name')
+        
 
 class BreakDownMakeMove(GenericAPIView):
     serializer_class = BreakDownMovePostSerializer
