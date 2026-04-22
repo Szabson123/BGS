@@ -41,6 +41,7 @@ class MachineViewSet(viewsets.ModelViewSet):
 
 class BreakDownListView(ListAPIView):
     serializer_class = BreakDownListSerializer
+    permission_classes = [IsAuthenticated]
     
     def get_queryset(self):
         statuses = BreakDownMove.objects \
