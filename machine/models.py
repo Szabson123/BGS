@@ -57,13 +57,13 @@ class MachineNotes(models.Model):
 
 class BreakDown(models.Model):
     class Priority(models.TextChoices):
-        LOW = 'LOW', 'Low'
+        NONE = 'NONE', 'None'
         MID = 'MID', 'Mid'
         HIGH = 'HIGH', 'High'
 
     machine = models.ForeignKey(Machine, on_delete=models.SET_NULL, null=True, blank=True, related_name='breakdowns')
     date_added = models.DateTimeField(auto_now_add=True)
-    priority = models.CharField(max_length=4, choices=Priority, default=Priority.LOW)
+    priority = models.CharField(max_length=4, choices=Priority, default=Priority.NONE)
     reporter = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='breakdowns')
     description = models.CharField(max_length=1024, null=True, blank=True)
 
