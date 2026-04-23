@@ -67,7 +67,6 @@ class MeAPIView(APIView):
             "email": user.email,
             "first_name": user.first_name,
             "last_name": user.last_name,
-
             "avaible_apps": app_list,
             "roles_list": roles_list,
         })

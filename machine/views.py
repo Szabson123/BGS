@@ -2,8 +2,10 @@ from django.shortcuts import render
 from django.db.models import Prefetch, Window, F, Q, Case, When, Value, IntegerField
 from django.db.models.functions import RowNumber
 from django.db import transaction
+from django_filters.rest_framework import DjangoFilterBackend
 
 from rest_framework import viewsets, status
+from rest_framework.filters import SearchFilter
 from rest_framework.generics import ListAPIView, CreateAPIView, GenericAPIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -24,6 +26,8 @@ class CustomPagination(PageNumberPagination):
 class MachineViewSet(viewsets.ModelViewSet):
     serializer_class = MachineMainSerializer
     pagination_class = CustomPagination
+    filter_backends = [DjangoFilterBackend, SearchFilter]
+    search_fields = ['name', 'alias']
 
     def get_queryset(self):
         if self.action == 'machine_full_history':
@@ -79,6 +83,8 @@ class BreakDownCreateMachineHelper(ListAPIView):
     serializer_class = MachineSerializer
     queryset = Machine.objects.none()
     permission_classes = [IsAuthenticated]
+    filter_backends = [SearchFilter]
+    search_fields = ['name', 'alias']
 
     def get_queryset(self):
         user = self.request.user
