@@ -11,12 +11,13 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from rest_framework.pagination import PageNumberPagination
+from django_filters import rest_framework as filters
 
 from .models import BreakDown, BreakDownMove, Machine
 from .serializers import (BreakDownListSerializer, BreakDownCreateSerializer, BreakDownMovePostSerializer, MachineMainSerializer,
                           MachineFullListSerializer, MachineSerializer, BreakDownListSerializerFullHistory)
 from .services import create_breakdown_with_initial_move, MoveBreakDownService
-
+from .filters import BreakDownFilter
 
 class CustomPagination(PageNumberPagination):
     page_size = 20
@@ -136,6 +137,8 @@ class BreakDownMakeMove(GenericAPIView):
 class BreakDownListViewToRaport(ListAPIView):
     serializer_class = BreakDownListSerializerFullHistory
     pagination_class = CustomPagination
+    filter_backends = [filters.DjangoFilterBackend]
+    filterset_class = BreakDownFilter
 
     def get_queryset(self):
         user = self.request.user

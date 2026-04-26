@@ -3,6 +3,7 @@ from .models import BreakDown, BreakDownMove
 from user.models import CustomUser
 from django.db import models
 
+
 class BreakDownFilter(filters.FilterSet):
     date_range = filters.DateFromToRangeFilter(field_name='date_added', label='Data zgłoszenia (od-do)')
     status = filters.ChoiceFilter(
