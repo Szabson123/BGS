@@ -14,7 +14,7 @@ from rest_framework.pagination import PageNumberPagination
 
 from .models import BreakDown, BreakDownMove, Machine
 from .serializers import (BreakDownListSerializer, BreakDownCreateSerializer, BreakDownMovePostSerializer, MachineMainSerializer,
-                          MachineFullListSerializer, MachineSerializer)
+                          MachineFullListSerializer, MachineSerializer, BreakDownListSerializerFullHistory)
 from .services import create_breakdown_with_initial_move, MoveBreakDownService
 
 
@@ -33,7 +33,7 @@ class MachineViewSet(viewsets.ModelViewSet):
         if self.action == 'machine_full_history':
             return Machine.objects.with_full_history()
         
-        return Machine.objects.select_related('workshop').prefetch_related('breakdowns', 'notes')
+        return Machine.objects.select_related('department').prefetch_related('breakdowns', 'notes')
 
     @action(detail=True, methods=['get'], serializer_class=MachineFullListSerializer)
     def machine_full_history(self, request, pk=None):
@@ -63,7 +63,7 @@ class BreakDownListView(ListAPIView):
                    .exclude(history__status=BreakDownMove.Status.ENDED) # Zapamiętać że to filtr na zakończone czyli nie mamy reaktywacji awari zakonczona to zakonczona
                    .prefetch_related(
                        Prefetch('history', queryset=statuses, to_attr='latest_status')
-                   ))
+                   ).order_by('-date_added'))
         
         return break_downs
         
@@ -93,13 +93,20 @@ class BreakDownCreateMachineHelper(ListAPIView):
             return Machine.objects.none()
         
         current_workshop = user.currentworkshop.workshop
+    
+        # DEBUG: Sprawdź czy warsztat jest poprawny
+        print(f"DEBUG: User workshop: {current_workshop.name} (ID: {current_workshop.id})")
+        
+        # DEBUG: Sprawdź ile maszyn w ogóle ma ten warsztat
+        all_machines = Machine.objects.filter(department__workshop=current_workshop)
+        print(f"DEBUG: Znaleziono maszyn: {all_machines.count()}")
         
         recent_machine_ids = (BreakDown.objects.filter(reporter=user)
-                              .order_by('-date_added')
-                              .values_list('machine_id', flat=True)
-                              .distinct()[:3])
-        
-        return Machine.objects.filter(workshop=current_workshop).annotate(
+                            .order_by('-date_added')
+                            .values_list('machine_id', flat=True)
+                            .distinct()[:3])
+            
+        return Machine.objects.filter(department__workshop=current_workshop).annotate(
             priority_group=Case(
                 When(id__in=recent_machine_ids, then=Value(1)),
                 default=Value(0),
@@ -126,3 +133,23 @@ class BreakDownMakeMove(GenericAPIView):
         return Response({"success"}, status=status.HTTP_201_CREATED)
     
 
+class BreakDownListViewToRaport(ListAPIView):
+    serializer_class = BreakDownListSerializerFullHistory
+    pagination_class = CustomPagination
+
+    def get_queryset(self):
+        user = self.request.user
+        if not hasattr(user, 'currentworkshop'):
+            return Machine.objects.none()
+        
+        current_workshop = user.currentworkshop.workshop
+
+        return (BreakDown.objects
+                .select_related('machine', 'reporter')
+                .prefetch_related(
+                    Prefetch('history',
+                            BreakDownMove.objects
+                            .select_related('user')))
+                .filter(machine__department__workshop=current_workshop)
+                .order_by('-date_added'))
+    

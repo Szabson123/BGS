@@ -24,7 +24,7 @@ class MachineNotesSerializer(serializers.ModelSerializer):
 class MachineMainSerializer(serializers.ModelSerializer):
     class Meta:
         model = Machine
-        fields = ['id', 'name', 'alias', 'workshop']
+        fields = ['id', 'name', 'alias', 'department']
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -77,8 +77,17 @@ class FullBreakDownHistory(serializers.ModelSerializer):
         fields = ['id', 'date_added', 'priority', 'reporter', 'description', 'history']
 
 class MachineFullListSerializer(serializers.ModelSerializer):
-    notes = MachineNotesSerializer(many=True, read_only=True)
     breakdowns = FullBreakDownHistory(many=True, read_only=True)
     class Meta:
         model = Machine
-        fields = ['id', 'notes', 'breakdowns']
+        fields = ['id', 'breakdowns']
+
+
+class BreakDownListSerializerFullHistory(serializers.ModelSerializer):
+    machine = MachineSerializer(read_only=True)
+    reporter = UserSerializer(read_only=True)
+    history = BreakDownMoveSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = BreakDown
+        fields = ['id', 'machine', 'date_added', 'priority', 'reporter', 'description', 'history']
