@@ -57,4 +57,8 @@ class MoveBreakDownService():
         if obj:
             raise ValidationError('This breakdown is ended')
 
+
+class EndBreakdownService():
+    def __init__(self, user, ):
+        pass
         

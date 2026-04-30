@@ -40,7 +40,7 @@ class MachineQuerySet(models.QuerySet):
 class Department(models.Model):
     workshop = models.ForeignKey(Workshop, on_delete=models.SET_NULL, null=True, blank=True, related_name='departments')
     name = models.CharField(max_length=255)
-    
+
 
 class Machine(models.Model):
     department = models.ForeignKey(Department, on_delete=models.SET_NULL, null=True, blank=True, related_name='machines')
@@ -52,6 +52,16 @@ class Machine(models.Model):
 
     def __str__(self):
         return self.name
+    
+
+class ClosingBreakdownTypes(models.Model):
+    workshop = models.ForeignKey(Workshop, on_delete=models.CASCADE)
+    name = models.CharField(max_length=255)
+
+
+class ResponsibleForBreakdown(models.Model):
+    workshop = models.ForeignKey(Workshop, on_delete=models.CASCADE)
+    name = models.CharField(max_length=255)
     
 
 class MachineNotes(models.Model):
@@ -78,7 +88,13 @@ class BreakDown(models.Model):
     
     def __str__(self):
         return f"{self.machine.name} {self.date_added}"
+    
 
+class AdditionalEndingBreakDownInfo(models.Model):
+    break_down = models.OneToOneField(BreakDown, on_delete=models.CASCADE)
+    closing_break_down_type = models.ManyToManyField(ClosingBreakdownTypes)
+    responsible_for_breakdown = models.ManyToManyField(ResponsibleForBreakdown)
+    
 
 class BreakDownMove(models.Model):
     class Status(models.TextChoices):

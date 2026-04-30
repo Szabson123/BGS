@@ -91,3 +91,7 @@ class BreakDownListSerializerFullHistory(serializers.ModelSerializer):
     class Meta:
         model = BreakDown
         fields = ['id', 'machine', 'date_added', 'priority', 'reporter', 'description', 'history']
+
+
+class EndBreakdownSerializer(serializers.ModelSerializer):
+    ...

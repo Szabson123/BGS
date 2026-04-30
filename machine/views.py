@@ -95,13 +95,6 @@ class BreakDownCreateMachineHelper(ListAPIView):
         
         current_workshop = user.currentworkshop.workshop
     
-        # DEBUG: Sprawdź czy warsztat jest poprawny
-        print(f"DEBUG: User workshop: {current_workshop.name} (ID: {current_workshop.id})")
-        
-        # DEBUG: Sprawdź ile maszyn w ogóle ma ten warsztat
-        all_machines = Machine.objects.filter(department__workshop=current_workshop)
-        print(f"DEBUG: Znaleziono maszyn: {all_machines.count()}")
-        
         recent_machine_ids = (BreakDown.objects.filter(reporter=user)
                             .order_by('-date_added')
                             .values_list('machine_id', flat=True)
@@ -132,6 +125,17 @@ class BreakDownMakeMove(GenericAPIView):
         service.execute()
 
         return Response({"success"}, status=status.HTTP_201_CREATED)
+    
+
+class BreakDownMakeEndedMove(GenericAPIView):
+    serializer_class = ...
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        service = MoveBreakDownService(user=self.request.user, **serializer.validated_data) #Do zmiany 
     
 
 class BreakDownListViewToRaport(ListAPIView):
