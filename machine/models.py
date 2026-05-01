@@ -3,7 +3,15 @@ from django.db.models import Prefetch
 from user.models import CustomUser
 
 
-class Workshop(models.Model):
+class BaseModel(models.Model):
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        abstract = True
+
+
+class Workshop(BaseModel):
     name = models.CharField(max_length=255, unique=True)
     owner = models.ForeignKey(CustomUser, on_delete=models.CASCADE, null=True, blank=True)
 
@@ -12,12 +20,12 @@ class Workshop(models.Model):
     
 # Komentarz -> kiedy jestes participantem to możesz awarie modyfikować jesli nie jestes to nie mozesz, curentworshop jest tylko do odczytu i zgłaszania awari
 
-class WorkShopParticipant(models.Model):
+class WorkShopParticipant(BaseModel):
     user = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name='workshopparticipant')
     workshop = models.ForeignKey(Workshop, on_delete=models.CASCADE, related_name='workshopparticipant')
 
 
-class CurrentWorkshop(models.Model):
+class CurrentWorkshop(BaseModel):
     user = models.OneToOneField(CustomUser, on_delete=models.CASCADE, related_name='currentworkshop')
     workshop = models.ForeignKey(Workshop, on_delete=models.CASCADE, related_name='currentworkshop')
 
@@ -32,17 +40,17 @@ class MachineQuerySet(models.QuerySet):
                         'history',
                         BreakDownMove.objects.select_related('user')
                     )
-                ).order_by('-date_added')
+                ).order_by('-created_at')
             )
         )
     
 
-class Department(models.Model):
+class Department(BaseModel):
     workshop = models.ForeignKey(Workshop, on_delete=models.SET_NULL, null=True, blank=True, related_name='departments')
     name = models.CharField(max_length=255)
 
 
-class Machine(models.Model):
+class Machine(BaseModel):
     department = models.ForeignKey(Department, on_delete=models.SET_NULL, null=True, blank=True, related_name='machines')
     name = models.CharField(max_length=255)
     alias = models.CharField(max_length=255, null=True, blank=True)
@@ -54,49 +62,48 @@ class Machine(models.Model):
         return self.name
     
 
-class ClosingBreakdownTypes(models.Model):
+class ClosingBreakdownTypes(BaseModel):
     workshop = models.ForeignKey(Workshop, on_delete=models.CASCADE)
     name = models.CharField(max_length=255)
 
 
-class ResponsibleForBreakdown(models.Model):
+class ResponsibleForBreakdown(BaseModel):
     workshop = models.ForeignKey(Workshop, on_delete=models.CASCADE)
     name = models.CharField(max_length=255)
     
 
-class MachineNotes(models.Model):
+class MachineNotes(BaseModel):
     machine = models.ForeignKey(Machine, on_delete=models.CASCADE, related_name='notes')
     description = models.CharField(max_length=1025)
     
 
-class BreakDown(models.Model):
+class BreakDown(BaseModel):
     class Priority(models.TextChoices):
         NONE = 'NONE', 'None'
         MID = 'MID', 'Mid'
         HIGH = 'HIGH', 'High'
 
-    machine = models.ForeignKey(Machine, on_delete=models.SET_NULL, null=True, blank=True, related_name='breakdowns')
-    date_added = models.DateTimeField(auto_now_add=True)
+    machine = models.ForeignKey(Machine, on_delete=models.CASCADE, related_name='breakdowns')
     priority = models.CharField(max_length=4, choices=Priority, default=Priority.NONE)
     reporter = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='breakdowns')
     description = models.CharField(max_length=1024, null=True, blank=True)
 
     class Meta:
         indexes = [
-            models.Index(fields=['-date_added']),
+            models.Index(fields=['-created_at']),
         ]
     
     def __str__(self):
-        return f"{self.machine.name} {self.date_added}"
+        return f"{self.machine.name} {self.created_at}"
     
 
-class AdditionalEndingBreakDownInfo(models.Model):
+class AdditionalEndingBreakDownInfo(BaseModel):
     break_down = models.OneToOneField(BreakDown, on_delete=models.CASCADE)
     closing_break_down_type = models.ManyToManyField(ClosingBreakdownTypes)
     responsible_for_breakdown = models.ManyToManyField(ResponsibleForBreakdown)
     
 
-class BreakDownMove(models.Model):
+class BreakDownMove(BaseModel):
     class Status(models.TextChoices):
         REPORTED = 'RP', 'Reported'
         STARTED = 'ST', 'Started'
@@ -105,14 +112,14 @@ class BreakDownMove(models.Model):
     break_down = models.ForeignKey(BreakDown, on_delete=models.CASCADE, related_name='history')
     user = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True)
     status = models.CharField(max_length=2, choices=Status)
-    time = models.DateTimeField(auto_now_add=True)
     description = models.CharField(max_length=1024, null=True, blank=True)
 
     class Meta:
-        ordering = ['-time']
+        ordering = ['-created_at']
         indexes = [
-            models.Index(fields=['time']),
-            models.Index(fields=['status'])
+            models.Index(fields=['created_at']),
+            models.Index(fields=['status']),
+            models.Index(fields=['break_down', '-created_at']),
         ]
 
     def __str__(self):

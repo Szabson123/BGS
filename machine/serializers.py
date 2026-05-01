@@ -1,7 +1,13 @@
 from rest_framework import serializers
 
-from .models import Workshop, Machine, BreakDown, BreakDownMove, MachineNotes
+from .models import Workshop, Machine, BreakDown, BreakDownMove, MachineNotes, AdditionalEndingBreakDownInfo, ResponsibleForBreakdown
 from user.models import CustomUser
+
+
+class AdditionalEndingBreakDownInfo(serializers.ModelSerializer):
+    class Meta:
+        fields = ['id', 'name']
+
 
 class WorkshopSerializer(serializers.ModelSerializer):
     class Meta:
@@ -37,7 +43,7 @@ class BreakDownMoveSerializer(serializers.ModelSerializer):
     user = UserSerializer(read_only=True)
     class Meta:
         model = BreakDownMove
-        fields = ['status', 'user', 'description', 'time']
+        fields = ['status', 'user', 'description', 'created_at']
 
 
 class BreakDownListSerializer(serializers.ModelSerializer):
@@ -47,7 +53,7 @@ class BreakDownListSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = BreakDown
-        fields = ['id', 'machine', 'date_added', 'priority', 'reporter', 'description', 'latest_status']
+        fields = ['id', 'machine', 'created_at', 'priority', 'reporter', 'description', 'latest_status']
 
     def get_latest_status(self, obj):
         status = getattr(obj, 'latest_status', [])
@@ -74,7 +80,7 @@ class FullBreakDownHistory(serializers.ModelSerializer):
 
     class Meta:
         model = BreakDown
-        fields = ['id', 'date_added', 'priority', 'reporter', 'description', 'history']
+        fields = ['id', 'created_at', 'priority', 'reporter', 'description', 'history']
 
 class MachineFullListSerializer(serializers.ModelSerializer):
     breakdowns = FullBreakDownHistory(many=True, read_only=True)
@@ -90,7 +96,7 @@ class BreakDownListSerializerFullHistory(serializers.ModelSerializer):
 
     class Meta:
         model = BreakDown
-        fields = ['id', 'machine', 'date_added', 'priority', 'reporter', 'description', 'history']
+        fields = ['id', 'machine', 'created_at', 'priority', 'reporter', 'description', 'history']
 
 
 class EndBreakdownSerializer(serializers.ModelSerializer):
