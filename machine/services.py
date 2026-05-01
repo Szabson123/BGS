@@ -40,9 +40,11 @@ class MoveBreakDownService():
 
     def check_is_user_participant(self):
         try:
+            print(self.user)
+
             participant = WorkShopParticipant.objects.get(
                 user = self.user,
-                workshop = self.break_down.machine.workshop
+                workshop = self.break_down.machine.department.workshop
             )
         except:
             raise ValidationError('You are not participant in this workshop you cant move breakdowns')

@@ -1,6 +1,7 @@
 from django.db import models
-from django.db.models import Prefetch
+from django.db.models import Prefetch, Window, F
 from user.models import CustomUser
+from django.db.models.functions import RowNumber
 
 
 class BaseModel(models.Model):
@@ -9,6 +10,41 @@ class BaseModel(models.Model):
 
     class Meta:
         abstract = True
+
+
+class MachineQuerySet(models.QuerySet):
+    def with_full_history(self):
+        return Machine.objects.select_related('department').prefetch_related(
+            Prefetch(
+                'breakdowns',
+                BreakDown.objects.select_related('reporter').prefetch_related(
+                    Prefetch(
+                        'history',
+                        BreakDownMove.objects.select_related('user')
+                    )
+                ).order_by('-created_at')
+            )
+        )
+    
+class BreakDownQuerySet(models.QuerySet):
+    def with_last_status(self):
+        statuses = BreakDownMove.objects.select_related('user').annotate(
+            row_number=Window( # Deklaracja Wiaderka
+                expression=RowNumber(), # Deklaracja że będziemy numerować rzędy w "Wiaderku"
+                partition_by=F('break_down_id'), # Liczby będą niezależne od obiektu BreakDown czyli bedziemy restować nasze liczby co breakdown
+                order_by=F('created_at').desc()
+            )
+        ).filter(row_number=1) # Wycinamy wszystko oprócz naszej jedynki 2. W moim Django 6.0 działa natywnie w Postgresql
+
+        return (self.select_related('reporter', 'machine')
+                    .prefetch_related(
+                        Prefetch(
+                            'history', queryset=statuses,
+                            to_attr='current_status_list'
+                        )
+                    )
+                )
+
 
 
 class Workshop(BaseModel):
@@ -29,21 +65,6 @@ class CurrentWorkshop(BaseModel):
     user = models.OneToOneField(CustomUser, on_delete=models.CASCADE, related_name='currentworkshop')
     workshop = models.ForeignKey(Workshop, on_delete=models.CASCADE, related_name='currentworkshop')
 
-
-class MachineQuerySet(models.QuerySet):
-    def with_full_history(self):
-        return Machine.objects.select_related('department').prefetch_related(
-            Prefetch(
-                'breakdowns',
-                BreakDown.objects.select_related('reporter').prefetch_related(
-                    Prefetch(
-                        'history',
-                        BreakDownMove.objects.select_related('user')
-                    )
-                ).order_by('-created_at')
-            )
-        )
-    
 
 class Department(BaseModel):
     workshop = models.ForeignKey(Workshop, on_delete=models.SET_NULL, null=True, blank=True, related_name='departments')
@@ -75,7 +96,7 @@ class ResponsibleForBreakdown(BaseModel):
 class MachineNotes(BaseModel):
     machine = models.ForeignKey(Machine, on_delete=models.CASCADE, related_name='notes')
     description = models.CharField(max_length=1025)
-    
+
 
 class BreakDown(BaseModel):
     class Priority(models.TextChoices):
@@ -87,6 +108,7 @@ class BreakDown(BaseModel):
     priority = models.CharField(max_length=4, choices=Priority, default=Priority.NONE)
     reporter = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='breakdowns')
     description = models.CharField(max_length=1024, null=True, blank=True)
+    objects = BreakDownQuerySet.as_manager()
 
     class Meta:
         indexes = [
@@ -124,3 +146,4 @@ class BreakDownMove(BaseModel):
 
     def __str__(self):
         return f"{self.break_down.machine.name} - {self.status} {self.time}"
+    

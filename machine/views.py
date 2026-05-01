@@ -49,24 +49,7 @@ class BreakDownListView(ListAPIView):
     permission_classes = [IsAuthenticated]
     
     def get_queryset(self):
-        statuses = BreakDownMove.objects \
-        .select_related('user') \
-        .annotate(
-            row_number=Window( # Deklaracja Wiaderka
-                expression=RowNumber(), # Deklaracja że będziemy numerować rzędy w "Wiaderku"
-                partition_by=[F('break_down_id')], # Liczby będą niezależne od obiektu BreakDown czyli bedziemy restować nasze liczby co breakdown
-                order_by=F('time').desc() # Jak numerujemy
-            )
-        ).filter(row_number=1) # Wycinamy wszystko oprócz naszej jedynki 2. W moim Django 6.0 działa natywnie w Postgresql
-
-        break_downs = (BreakDown.objects
-                   .select_related('reporter', 'machine')
-                   .exclude(history__status=BreakDownMove.Status.ENDED) # Zapamiętać że to filtr na zakończone czyli nie mamy reaktywacji awari zakonczona to zakonczona
-                   .prefetch_related(
-                       Prefetch('history', queryset=statuses, to_attr='latest_status')
-                   ).order_by('-date_added'))
-        
-        return break_downs
+        return BreakDown.objects.with_last_status().exclude(history__status=BreakDownMove.Status.ENDED).order_by('-created_at')
         
 
 class BreakDownCreateView(CreateAPIView):
@@ -96,7 +79,7 @@ class BreakDownCreateMachineHelper(ListAPIView):
         current_workshop = user.currentworkshop.workshop
     
         recent_machine_ids = (BreakDown.objects.filter(reporter=user)
-                            .order_by('-date_added')
+                            .order_by('-created_at')
                             .values_list('machine_id', flat=True)
                             .distinct()[:3])
             
@@ -158,5 +141,5 @@ class BreakDownListViewToRaport(ListAPIView):
                             BreakDownMove.objects
                             .select_related('user')))
                 .filter(machine__department__workshop=current_workshop)
-                .order_by('-date_added'))
+                .order_by('-created_at'))
     

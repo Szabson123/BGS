@@ -56,7 +56,7 @@ class BreakDownListSerializer(serializers.ModelSerializer):
         fields = ['id', 'machine', 'created_at', 'priority', 'reporter', 'description', 'latest_status']
 
     def get_latest_status(self, obj):
-        status = getattr(obj, 'latest_status', [])
+        status = getattr(obj, 'current_status_list', [])
         if status:
             return BreakDownMoveSerializer(status[0]).data
         return None
