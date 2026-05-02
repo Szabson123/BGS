@@ -26,6 +26,7 @@ class MachineQuerySet(models.QuerySet):
             )
         )
     
+    
 class BreakDownQuerySet(models.QuerySet):
     def with_last_status(self):
         statuses = BreakDownMove.objects.select_related('user').annotate(
@@ -44,7 +45,6 @@ class BreakDownQuerySet(models.QuerySet):
                         )
                     )
                 )
-
 
 
 class Workshop(BaseModel):

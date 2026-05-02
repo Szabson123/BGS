@@ -5,6 +5,8 @@ from .views import *
 router = DefaultRouter()
 
 router.register(r'machines', MachineViewSet, basename='machines')
+router.register(r'closing-breakdown-types/(?P<workshop_id>\d+)', ClosingBreakDownTypesViewset, basename='closing-breakdown-types')
+router.register(r'responsible-for-breakdown/(?P<workshop_id>\d+)', ResponsibleForBreakdownViewset, basename='responsible-for-breakdown')
 
 urlpatterns = [
     path('', include(router.urls)),

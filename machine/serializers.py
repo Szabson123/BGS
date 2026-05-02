@@ -1,11 +1,18 @@
 from rest_framework import serializers
 
-from .models import Workshop, Machine, BreakDown, BreakDownMove, MachineNotes, AdditionalEndingBreakDownInfo, ResponsibleForBreakdown
+from .models import Workshop, Machine, BreakDown, BreakDownMove, MachineNotes, AdditionalEndingBreakDownInfo, ResponsibleForBreakdown, ClosingBreakdownTypes
 from user.models import CustomUser
 
 
-class AdditionalEndingBreakDownInfo(serializers.ModelSerializer):
+class ClosingBreakdownTypesSerializer(serializers.ModelSerializer):
     class Meta:
+        model = ClosingBreakdownTypes
+        fields = ['id', 'name']
+
+
+class ResponsibleForBreakdownSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ResponsibleForBreakdown
         fields = ['id', 'name']
 
 

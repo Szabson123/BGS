@@ -1,4 +1,4 @@
-from django.shortcuts import render
+from django.shortcuts import render, get_object_or_404
 from django.db.models import Prefetch, Window, F, Q, Case, When, Value, IntegerField
 from django.db.models.functions import RowNumber
 from django.db import transaction
@@ -13,11 +13,12 @@ from rest_framework.decorators import action
 from rest_framework.pagination import PageNumberPagination
 from django_filters import rest_framework as filters
 
-from .models import BreakDown, BreakDownMove, Machine
+from .models import BreakDown, BreakDownMove, Machine, ClosingBreakdownTypes, ResponsibleForBreakdown
 from .serializers import (BreakDownListSerializer, BreakDownCreateSerializer, BreakDownMovePostSerializer, MachineMainSerializer,
-                          MachineFullListSerializer, MachineSerializer, BreakDownListSerializerFullHistory)
+                          MachineFullListSerializer, ClosingBreakdownTypesSerializer, MachineSerializer, BreakDownListSerializerFullHistory, ResponsibleForBreakdownSerializer)
 from .services import create_breakdown_with_initial_move, MoveBreakDownService
 from .filters import BreakDownFilter
+from .mixins import WorkshopContextMixin
 
 class CustomPagination(PageNumberPagination):
     page_size = 20
@@ -118,8 +119,9 @@ class BreakDownMakeEndedMove(GenericAPIView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        service = MoveBreakDownService(user=self.request.user, **serializer.validated_data) #Do zmiany 
-    
+        service = MoveBreakDownService(user=self.request.user, **serializer.validated_data) #Do zmiany
+        service.execute()
+        return Response({"success"}, status=status.HTTP_201_CREATED)
 
 class BreakDownListViewToRaport(ListAPIView):
     serializer_class = BreakDownListSerializerFullHistory
@@ -143,3 +145,12 @@ class BreakDownListViewToRaport(ListAPIView):
                 .filter(machine__department__workshop=current_workshop)
                 .order_by('-created_at'))
     
+
+class ClosingBreakDownTypesViewset(WorkshopContextMixin, viewsets.ModelViewSet):
+    serializer_class = ClosingBreakdownTypesSerializer
+    queryset = ClosingBreakdownTypes.objects.all()
+
+
+class ResponsibleForBreakdownViewset(WorkshopContextMixin, viewsets.ModelViewSet):
+    serializer_class = ResponsibleForBreakdownSerializer
+    queryset = ResponsibleForBreakdown.objects.all()
