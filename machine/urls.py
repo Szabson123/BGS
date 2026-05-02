@@ -13,6 +13,7 @@ urlpatterns = [
     path('all-break-downs/', BreakDownListView.as_view(), name='break-downs'),
     path('create/break-down/', BreakDownCreateView.as_view(), name='craete-break-down'),
     path('move/break-down/', BreakDownMakeMove.as_view(), name='move-break-down'),
+    path('end/break-down/', BreakDownMakeEndedMove.as_view(), name='end-break-down'),
     path('create/break-down/machine-list/helper/', BreakDownCreateMachineHelper.as_view(), name='move-break-down'),
     path('all-break-downs-to-report/', BreakDownListViewToRaport.as_view(), name='break-downs'),
 ]

@@ -121,8 +121,8 @@ class BreakDown(BaseModel):
 
 class AdditionalEndingBreakDownInfo(BaseModel):
     break_down = models.OneToOneField(BreakDown, on_delete=models.CASCADE)
-    closing_break_down_type = models.ManyToManyField(ClosingBreakdownTypes)
-    responsible_for_breakdown = models.ManyToManyField(ResponsibleForBreakdown)
+    closing_break_down_type = models.ForeignKey(ClosingBreakdownTypes, on_delete=models.CASCADE)
+    responsible_for_breakdown = models.ForeignKey(ResponsibleForBreakdown, on_delete=models.CASCADE)
     
 
 class BreakDownMove(BaseModel):

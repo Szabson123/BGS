@@ -107,4 +107,9 @@ class BreakDownListSerializerFullHistory(serializers.ModelSerializer):
 
 
 class EndBreakdownSerializer(serializers.ModelSerializer):
-    ...
+    closing_break_down_type = serializers.PrimaryKeyRelatedField(queryset=ClosingBreakdownTypes.objects.all())
+    responsible_for_breakdown = serializers.PrimaryKeyRelatedField(queryset=ResponsibleForBreakdown.objects.all())
+    
+    class Meta:
+        model = BreakDownMove
+        fields = ['break_down', 'description', 'closing_break_down_type', 'responsible_for_breakdown']

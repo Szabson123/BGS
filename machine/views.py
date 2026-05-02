@@ -1,7 +1,4 @@
-from django.shortcuts import render, get_object_or_404
-from django.db.models import Prefetch, Window, F, Q, Case, When, Value, IntegerField
-from django.db.models.functions import RowNumber
-from django.db import transaction
+from django.db.models import Prefetch, Case, When, Value, IntegerField
 from django_filters.rest_framework import DjangoFilterBackend
 
 from rest_framework import viewsets, status
@@ -14,11 +11,12 @@ from rest_framework.pagination import PageNumberPagination
 from django_filters import rest_framework as filters
 
 from .models import BreakDown, BreakDownMove, Machine, ClosingBreakdownTypes, ResponsibleForBreakdown
-from .serializers import (BreakDownListSerializer, BreakDownCreateSerializer, BreakDownMovePostSerializer, MachineMainSerializer,
+from .serializers import (BreakDownListSerializer, BreakDownCreateSerializer, BreakDownMovePostSerializer, MachineMainSerializer, EndBreakdownSerializer,
                           MachineFullListSerializer, ClosingBreakdownTypesSerializer, MachineSerializer, BreakDownListSerializerFullHistory, ResponsibleForBreakdownSerializer)
-from .services import create_breakdown_with_initial_move, MoveBreakDownService
+from .services import create_breakdown_with_initial_move, MoveBreakDownService, EndBreakdownService
 from .filters import BreakDownFilter
 from .mixins import WorkshopContextMixin
+
 
 class CustomPagination(PageNumberPagination):
     page_size = 20
@@ -112,16 +110,18 @@ class BreakDownMakeMove(GenericAPIView):
     
 
 class BreakDownMakeEndedMove(GenericAPIView):
-    serializer_class = ...
+    serializer_class = EndBreakdownSerializer
     permission_classes = [IsAuthenticated]
 
     def post(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        service = MoveBreakDownService(user=self.request.user, **serializer.validated_data) #Do zmiany
+        service = EndBreakdownService(user=self.request.user, **serializer.validated_data)
         service.execute()
+
         return Response({"success"}, status=status.HTTP_201_CREATED)
+
 
 class BreakDownListViewToRaport(ListAPIView):
     serializer_class = BreakDownListSerializerFullHistory
@@ -132,7 +132,7 @@ class BreakDownListViewToRaport(ListAPIView):
     def get_queryset(self):
         user = self.request.user
         if not hasattr(user, 'currentworkshop'):
-            return Machine.objects.none()
+            return BreakDown.objects.none()
         
         current_workshop = user.currentworkshop.workshop
 
