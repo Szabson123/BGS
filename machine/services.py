@@ -59,7 +59,6 @@ class MoveBreakDownService():
             raise ValidationError('This breakdown is ended')
 
 
-
 class EndBreakdownService():
     def __init__(self, user, break_down, description, closing_break_down_type, responsible_for_breakdown):
         self.user = user

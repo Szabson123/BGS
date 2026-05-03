@@ -20,11 +20,23 @@ class BreakDownFilter(filters.FilterSet):
         label='Serwisant biorący udział'
     )
 
+    date_from = filters.DateFilter(
+        field_name='created_at', 
+        lookup_expr='gte', 
+        label='Data zgłoszenia od'
+    )
+    
+    date_to = filters.DateFilter(
+        field_name='created_at', 
+        lookup_expr='lte', 
+        label='Data zgłoszenia do'
+    )
+
     search = filters.CharFilter(method='filter_by_all_descriptions', label='Szukaj w opisach')
 
     class Meta:
         model = BreakDown
-        fields = ['machine', 'priority', 'reporter']
+        fields = ['priority', 'reporter', 'machine']
 
     def filter_by_all_descriptions(self, queryset, name, value):
         return queryset.filter(
