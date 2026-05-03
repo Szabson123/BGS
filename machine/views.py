@@ -103,6 +103,9 @@ class BreakDownMakeMove(GenericAPIView):
         break_down = serializer.validated_data['break_down']
         description = serializer.validated_data['description']
 
+        if move_status == 'ED':
+            return Response({'error': 'You cant end with this service'}, status=status.HTTP_400_BAD_REQUEST)
+
         service = MoveBreakDownService(user=self.request.user, status_val=move_status, break_down=break_down, description=description)
         service.execute()
 
@@ -154,3 +157,32 @@ class ClosingBreakDownTypesViewset(WorkshopContextMixin, viewsets.ModelViewSet):
 class ResponsibleForBreakdownViewset(WorkshopContextMixin, viewsets.ModelViewSet):
     serializer_class = ResponsibleForBreakdownSerializer
     queryset = ResponsibleForBreakdown.objects.all()
+
+
+class ClosingBreakDownTypesHelper(ListAPIView):
+    serializer_class = ClosingBreakdownTypesSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        if not hasattr(user, 'currentworkshop'):
+            return ClosingBreakdownTypes.objects.none()
+        
+        current_workshop = user.currentworkshop.workshop
+
+        return ClosingBreakdownTypes.objects.filter(workshop=current_workshop)
+    
+
+class ResponsibleForBreakdownHelper(ListAPIView):
+    serializer_class = ResponsibleForBreakdownSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        if not hasattr(user, 'currentworkshop'):
+            return ResponsibleForBreakdown.objects.none()
+        
+        current_workshop = user.currentworkshop.workshop
+
+        return ResponsibleForBreakdown.objects.filter(workshop=current_workshop)
+

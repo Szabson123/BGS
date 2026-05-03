@@ -15,5 +15,7 @@ urlpatterns = [
     path('move/break-down/', BreakDownMakeMove.as_view(), name='move-break-down'),
     path('end/break-down/', BreakDownMakeEndedMove.as_view(), name='end-break-down'),
     path('create/break-down/machine-list/helper/', BreakDownCreateMachineHelper.as_view(), name='move-break-down'),
+    path('move/break-down/types/helper/', ClosingBreakDownTypesHelper.as_view(), name='types-helper'),
+    path('move/break-down/responsible/helper/', ResponsibleForBreakdownHelper.as_view(), name='responsible-helper'),
     path('all-break-downs-to-report/', BreakDownListViewToRaport.as_view(), name='break-downs'),
 ]
