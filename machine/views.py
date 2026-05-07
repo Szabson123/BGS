@@ -189,7 +189,7 @@ class ClosingBreakDownTypesHelper(ListAPIView):
         
         current_workshop = user.currentworkshop.workshop
 
-        return ClosingBreakdownTypes.objects.filter(workshop=current_workshop)
+        return ClosingBreakdownTypes.objects.select_related('workshop').filter(workshop=current_workshop)
     
 
 class ResponsibleForBreakdownHelper(ListAPIView):
@@ -203,7 +203,7 @@ class ResponsibleForBreakdownHelper(ListAPIView):
         
         current_workshop = user.currentworkshop.workshop
 
-        return ResponsibleForBreakdown.objects.filter(workshop=current_workshop)
+        return ResponsibleForBreakdown.objects.select_related('workshop').filter(workshop=current_workshop)
 
 
 class WorkshopViewset(viewsets.ModelViewSet):
