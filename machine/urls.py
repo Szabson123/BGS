@@ -4,9 +4,11 @@ from .views import *
 
 router = DefaultRouter()
 
-router.register(r'machines', MachineViewSet, basename='machines')
+router.register(r'machines/(?P<workshop_id>\d+)', MachineViewSet, basename='machines')
+router.register(r'workshops', WorkshopViewset, basename='workshops')
 router.register(r'closing-breakdown-types/(?P<workshop_id>\d+)', ClosingBreakDownTypesViewset, basename='closing-breakdown-types')
 router.register(r'responsible-for-breakdown/(?P<workshop_id>\d+)', ResponsibleForBreakdownViewset, basename='responsible-for-breakdown')
+
 
 urlpatterns = [
     path('', include(router.urls)),
@@ -18,4 +20,7 @@ urlpatterns = [
     path('move/break-down/types/helper/', ClosingBreakDownTypesHelper.as_view(), name='types-helper'),
     path('move/break-down/responsible/helper/', ResponsibleForBreakdownHelper.as_view(), name='responsible-helper'),
     path('all-break-downs-to-report/', BreakDownListViewToRaport.as_view(), name='break-downs'),
+    path('machines-to-current-workshop/', MachinesInCurrentWorkshop.as_view(), name='machines-to-current-workshop'),
+    path('breakdown-to-machine/<int:machine_id>/', BreakdownListToMachine.as_view(), name='breakdown-to-machine')
+
 ]

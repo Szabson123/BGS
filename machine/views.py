@@ -10,9 +10,10 @@ from rest_framework.decorators import action
 from rest_framework.pagination import PageNumberPagination
 from django_filters import rest_framework as filters
 
-from .models import BreakDown, BreakDownMove, Machine, ClosingBreakdownTypes, ResponsibleForBreakdown
-from .serializers import (BreakDownListSerializer, BreakDownCreateSerializer, BreakDownMovePostSerializer, MachineMainSerializer, EndBreakdownSerializer,
-                          MachineFullListSerializer, ClosingBreakdownTypesSerializer, MachineSerializer, BreakDownListSerializerFullHistory, ResponsibleForBreakdownSerializer)
+from .models import BreakDown, BreakDownMove, Machine, ClosingBreakdownTypes, ResponsibleForBreakdown, Workshop
+from .serializers import (BreakDownListSerializer, BreakDownCreateSerializer, BreakDownMovePostSerializer, MachineMainSerializer, EndBreakdownSerializer, WorkshopSerializer,
+                          MachineFullListSerializer, ClosingBreakdownTypesSerializer, MachineSerializer, BreakDownListSerializerFullHistory, ResponsibleForBreakdownSerializer,
+                          FullBreakDownHistorySerializer)
 from .services import create_breakdown_with_initial_move, MoveBreakDownService, EndBreakdownService
 from .filters import BreakDownFilter
 from .mixins import WorkshopContextMixin
@@ -23,24 +24,42 @@ class CustomPagination(PageNumberPagination):
     max_page_size = 60
 
 
+class MachinesInCurrentWorkshop(ListAPIView):
+    serializer_class = MachineMainSerializer
+    permission_classes = [IsAuthenticated]
+    
+    def get_queryset(self):
+        user = self.request.user
+        if not hasattr(user, 'currentworkshop'):
+            return Machine.objects.none()
+        
+        current_workshop = user.currentworkshop.workshop
+        return Machine.objects.filter(department__workshop=current_workshop)
+    
+
 class MachineViewSet(viewsets.ModelViewSet):
     serializer_class = MachineMainSerializer
-    pagination_class = CustomPagination
-    filter_backends = [DjangoFilterBackend, SearchFilter]
-    search_fields = ['name', 'alias']
+    permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        if self.action == 'machine_full_history':
-            return Machine.objects.with_full_history()
-        
-        return Machine.objects.select_related('department').prefetch_related('breakdowns', 'notes')
+        workshop_id = self.kwargs.get('workshop_id')
+        return Machine.objects.filter(department__workshop=workshop_id)
 
-    @action(detail=True, methods=['get'], serializer_class=MachineFullListSerializer)
-    def machine_full_history(self, request, pk=None):
-        machine = self.get_object()
-        serializer = self.get_serializer(machine)
 
-        return Response(serializer.data)
+class BreakdownListToMachine(ListAPIView):
+    serializer_class =  FullBreakDownHistorySerializer
+    pagination_class = CustomPagination
+    
+    def get_queryset(self):
+        machine_id = self.kwargs.get('machine_id')
+        queryset = BreakDown.objects.select_related('reporter', 'machine').prefetch_related(
+            Prefetch(
+                'history',
+                queryset=BreakDownMove.objects.select_related('user')
+            )
+        ).filter(machine=machine_id).order_by('-created_at')
+
+        return queryset
 
 
 class BreakDownListView(ListAPIView):
@@ -185,4 +204,9 @@ class ResponsibleForBreakdownHelper(ListAPIView):
         current_workshop = user.currentworkshop.workshop
 
         return ResponsibleForBreakdown.objects.filter(workshop=current_workshop)
+
+
+class WorkshopViewset(viewsets.ModelViewSet):
+    serializer_class = WorkshopSerializer
+    queryset = Workshop.objects.all() # narazie wszystkie ptoem tylko admin/owner
 

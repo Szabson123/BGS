@@ -6,7 +6,7 @@ from django.db import models
 
 
 class BreakDownFilter(filters.FilterSet):
-    date_range = filters.DateFromToRangeFilter(field_name='created_at', label='Data zgłoszenia (od-do)')
+    date_range = filters.DateTimeFromToRangeFilter(field_name='created_at', label='Data zgłoszenia (od-do)')
 
     status = filters.ChoiceFilter(
         choices=BreakDownMove.Status.choices,
@@ -18,18 +18,6 @@ class BreakDownFilter(filters.FilterSet):
         field_name='history__user',
         queryset=CustomUser.objects.all(),
         label='Serwisant biorący udział'
-    )
-
-    date_from = filters.DateFilter(
-        field_name='created_at', 
-        lookup_expr='gte', 
-        label='Data zgłoszenia od'
-    )
-    
-    date_to = filters.DateFilter(
-        field_name='created_at', 
-        lookup_expr='lte', 
-        label='Data zgłoszenia do'
     )
 
     search = filters.CharFilter(method='filter_by_all_descriptions', label='Szukaj w opisach')

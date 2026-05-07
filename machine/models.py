@@ -13,19 +13,22 @@ class BaseModel(models.Model):
 
 
 class MachineQuerySet(models.QuerySet):
-    def with_full_history(self):
-        return Machine.objects.select_related('department').prefetch_related(
-            Prefetch(
-                'breakdowns',
-                BreakDown.objects.select_related('reporter').prefetch_related(
-                    Prefetch(
-                        'history',
-                        BreakDownMove.objects.select_related('user')
-                    )
-                ).order_by('-created_at')
+    def with_full_history(self, workshop=None):
+        if workshop:
+            queryset = self.select_related('department').prefetch_related(
+                Prefetch(
+                    'breakdowns',
+                    queryset=BreakDown.objects.select_related('reporter').prefetch_related(
+                        Prefetch(
+                            'history',
+                            queryset=BreakDownMove.objects.select_related('user')
+                        )
+                    ).filter(department__workshop=workshop).order_by('-created_at')
+                )
             )
-        )
-    
+            return queryset 
+        else:
+            return self.none()
     
 class BreakDownQuerySet(models.QuerySet):
     def with_last_status(self):

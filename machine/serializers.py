@@ -35,9 +35,10 @@ class MachineNotesSerializer(serializers.ModelSerializer):
 
 
 class MachineMainSerializer(serializers.ModelSerializer):
+
     class Meta:
         model = Machine
-        fields = ['id', 'name', 'alias', 'department']
+        fields = ['id', 'name', 'alias', 'department', 'phase_id']
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -81,7 +82,7 @@ class BreakDownMovePostSerializer(serializers.Serializer):
     description = serializers.CharField(max_length=1024, required=False, allow_blank=True)
 
 
-class FullBreakDownHistory(serializers.ModelSerializer):
+class FullBreakDownHistorySerializer(serializers.ModelSerializer):
     reporter = UserSerializer(read_only=True)
     history = BreakDownMoveSerializer(many=True, read_only=True)
 
@@ -90,7 +91,7 @@ class FullBreakDownHistory(serializers.ModelSerializer):
         fields = ['id', 'created_at', 'priority', 'reporter', 'description', 'history']
 
 class MachineFullListSerializer(serializers.ModelSerializer):
-    breakdowns = FullBreakDownHistory(many=True, read_only=True)
+    breakdowns = FullBreakDownHistorySerializer(many=True, read_only=True)
     class Meta:
         model = Machine
         fields = ['id', 'breakdowns']
