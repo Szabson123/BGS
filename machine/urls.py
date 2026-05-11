@@ -6,6 +6,7 @@ router = DefaultRouter()
 
 router.register(r'machines/(?P<workshop_id>\d+)', MachineViewSet, basename='machines')
 router.register(r'workshops', WorkshopViewset, basename='workshops')
+router.register(r'department', DepartmentViewSet, basename='deparment')
 router.register(r'closing-breakdown-types/(?P<workshop_id>\d+)', ClosingBreakDownTypesViewset, basename='closing-breakdown-types')
 router.register(r'responsible-for-breakdown/(?P<workshop_id>\d+)', ResponsibleForBreakdownViewset, basename='responsible-for-breakdown')
 

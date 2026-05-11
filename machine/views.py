@@ -1,5 +1,6 @@
 from django.db.models import Prefetch, Case, When, Value, IntegerField
 from django_filters.rest_framework import DjangoFilterBackend
+from django.shortcuts import get_object_or_404
 
 from rest_framework import viewsets, status
 from rest_framework.filters import SearchFilter
@@ -10,10 +11,10 @@ from rest_framework.decorators import action
 from rest_framework.pagination import PageNumberPagination
 from django_filters import rest_framework as filters
 
-from .models import BreakDown, BreakDownMove, Machine, ClosingBreakdownTypes, ResponsibleForBreakdown, Workshop
+from .models import BreakDown, BreakDownMove, Machine, ClosingBreakdownTypes, ResponsibleForBreakdown, Workshop, Department
 from .serializers import (BreakDownListSerializer, BreakDownCreateSerializer, BreakDownMovePostSerializer, MachineMainSerializer, EndBreakdownSerializer, WorkshopSerializer,
                           MachineFullListSerializer, ClosingBreakdownTypesSerializer, MachineSerializer, BreakDownListSerializerFullHistory, ResponsibleForBreakdownSerializer,
-                          FullBreakDownHistorySerializer)
+                          FullBreakDownHistorySerializer, DepartamntSerializer)
 from .services import create_breakdown_with_initial_move, MoveBreakDownService, EndBreakdownService
 from .filters import BreakDownFilter
 from .mixins import WorkshopContextMixin
@@ -22,6 +23,11 @@ from .mixins import WorkshopContextMixin
 class CustomPagination(PageNumberPagination):
     page_size = 20
     max_page_size = 60
+
+
+class DepartmentViewSet(viewsets.ModelViewSet):
+    serializer_class = DepartamntSerializer
+    queryset = Department.objects.all()
 
 
 class MachinesInCurrentWorkshop(ListAPIView):
@@ -34,7 +40,7 @@ class MachinesInCurrentWorkshop(ListAPIView):
             return Machine.objects.none()
         
         current_workshop = user.currentworkshop.workshop
-        return Machine.objects.filter(department__workshop=current_workshop)
+        return Machine.objects.select_related('workshop', 'department').filter(workshop=current_workshop)
     
 
 class MachineViewSet(viewsets.ModelViewSet):
@@ -43,7 +49,12 @@ class MachineViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         workshop_id = self.kwargs.get('workshop_id')
-        return Machine.objects.filter(department__workshop=workshop_id)
+        return Machine.objects.select_related('workshop', 'department').filter(workshop=workshop_id)
+    
+    def perform_create(self, serializer):
+        workshop_id = self.kwargs.get('workshop_id')
+        workshop = get_object_or_404(Workshop, pk=workshop_id)
+        serializer.save(workshop=workshop)
 
 
 class BreakdownListToMachine(ListAPIView):

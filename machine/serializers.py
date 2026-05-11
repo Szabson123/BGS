@@ -1,7 +1,13 @@
 from rest_framework import serializers
 
-from .models import Workshop, Machine, BreakDown, BreakDownMove, MachineNotes, AdditionalEndingBreakDownInfo, ResponsibleForBreakdown, ClosingBreakdownTypes
+from .models import Workshop, Machine, BreakDown, BreakDownMove, MachineNotes, AdditionalEndingBreakDownInfo, ResponsibleForBreakdown, ClosingBreakdownTypes, Department
 from user.models import CustomUser
+
+
+class DepartamntSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Department
+        fields = ['id', 'name']
 
 
 class ClosingBreakdownTypesSerializer(serializers.ModelSerializer):
@@ -35,10 +41,13 @@ class MachineNotesSerializer(serializers.ModelSerializer):
 
 
 class MachineMainSerializer(serializers.ModelSerializer):
+    department_name = serializers.StringRelatedField(source='department.name', read_only=True)
+    department = serializers.PrimaryKeyRelatedField(queryset=Department.objects.all(), write_only=True)
+    workshop_name = serializers.StringRelatedField(source='workshop.name', read_only=True)
 
     class Meta:
         model = Machine
-        fields = ['id', 'name', 'alias', 'department', 'phase_id', 'sigip_num']
+        fields = ['id', 'name', 'alias', 'phase_id', 'sigip_num', 'department_name', 'department', 'workshop_name']
 
 
 class UserSerializer(serializers.ModelSerializer):
