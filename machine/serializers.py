@@ -38,7 +38,7 @@ class MachineMainSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Machine
-        fields = ['id', 'name', 'alias', 'department', 'phase_id']
+        fields = ['id', 'name', 'alias', 'department', 'phase_id', 'sigip_num']
 
 
 class UserSerializer(serializers.ModelSerializer):
