@@ -43,7 +43,7 @@ class MoveBreakDownService():
         try:
             participant = WorkShopParticipant.objects.get(
                 user = self.user,
-                workshop = self.break_down.machine.department.workshop
+                workshop = self.break_down.machine.workshop
             )
         except:
             raise ValidationError('You are not participant in this workshop you cant move breakdowns')
@@ -54,7 +54,6 @@ class MoveBreakDownService():
             status = BreakDownMove.Status.ENDED
         ).exists()
 
-        print(obj)
         if obj:
             raise ValidationError('This breakdown is ended')
 
@@ -92,7 +91,7 @@ class EndBreakdownService():
         try:
             participant = WorkShopParticipant.objects.get(
                 user = self.user,
-                workshop = self.break_down.machine.department.workshop
+                workshop = self.break_down.machine.workshop
             )
 
         except:

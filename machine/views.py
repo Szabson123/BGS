@@ -102,17 +102,21 @@ class BreakDownCreateMachineHelper(ListAPIView):
     def get_queryset(self):
         user = self.request.user
 
-        if not hasattr(user, 'currentworkshop'):
+        print(f'{user}------------------------------')
+
+        if not hasattr(user, 'currentdepartment'):
             return Machine.objects.none()
         
-        current_workshop = user.currentworkshop.workshop
+        current_department = user.currentdepartment.department
+
+        print(f'{current_department}------------------------------')
     
         recent_machine_ids = (BreakDown.objects.filter(reporter=user)
                             .order_by('-created_at')
                             .values_list('machine_id', flat=True)
                             .distinct()[:3])
             
-        return Machine.objects.filter(department__workshop=current_workshop).annotate(
+        return Machine.objects.filter(department=current_department).annotate(
             priority_group=Case(
                 When(id__in=recent_machine_ids, then=Value(1)),
                 default=Value(0),
@@ -175,7 +179,7 @@ class BreakDownListViewToRaport(ListAPIView):
                     Prefetch('history',
                             BreakDownMove.objects
                             .select_related('user')))
-                .filter(machine__department__workshop=current_workshop)
+                .filter(machine__workshop=current_workshop)
                 .order_by('-created_at'))
     
 

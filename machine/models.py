@@ -73,6 +73,11 @@ class Department(BaseModel):
     name = models.CharField(max_length=255)
 
 
+class CurrentDepartment(BaseModel):
+    user = models.OneToOneField(CustomUser, on_delete=models.CASCADE, related_name='currentdepartment')
+    department = models.ForeignKey(Department, on_delete=models.CASCADE, related_name='currentdepartment')
+
+
 class Machine(BaseModel):
     department = models.ForeignKey(Department, on_delete=models.SET_NULL, null=True, blank=True, related_name='machines')
     workshop = models.ForeignKey(Workshop, on_delete=models.CASCADE, null=True, blank=True, related_name='machines')
@@ -125,7 +130,7 @@ class BreakDown(BaseModel):
     
 
 class AdditionalEndingBreakDownInfo(BaseModel):
-    break_down = models.OneToOneField(BreakDown, on_delete=models.CASCADE)
+    break_down = models.OneToOneField(BreakDown, on_delete=models.CASCADE, related_name='additionalinfo')
     closing_break_down_type = models.ForeignKey(ClosingBreakdownTypes, on_delete=models.CASCADE)
     responsible_for_breakdown = models.ForeignKey(ResponsibleForBreakdown, on_delete=models.CASCADE)
     
@@ -150,5 +155,5 @@ class BreakDownMove(BaseModel):
         ]
 
     def __str__(self):
-        return f"{self.break_down.machine.name} - {self.status} {self.time}"
+        return f"{self.break_down.machine.name} - {self.status} {self.created_at}"
     

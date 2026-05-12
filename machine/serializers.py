@@ -10,6 +10,14 @@ class DepartamntSerializer(serializers.ModelSerializer):
         fields = ['id', 'name']
 
 
+class AdditionalEndingBreakDownInfoSerializer(serializers.ModelSerializer):
+    closing_break_down_type_name = serializers.StringRelatedField(source='closing_break_down_type.name')
+    responsible_for_breakdown = serializers.StringRelatedField(source='responsible_for_breakdown.name')
+    class Meta:
+        model = AdditionalEndingBreakDownInfo
+        fields = ['closing_break_down_type_name', 'responsible_for_breakdown']
+
+
 class ClosingBreakdownTypesSerializer(serializers.ModelSerializer):
     class Meta:
         model = ClosingBreakdownTypes
@@ -42,7 +50,7 @@ class MachineNotesSerializer(serializers.ModelSerializer):
 
 class MachineMainSerializer(serializers.ModelSerializer):
     department_name = serializers.StringRelatedField(source='department.name', read_only=True)
-    department = serializers.PrimaryKeyRelatedField(queryset=Department.objects.all(), write_only=True)
+    department = serializers.PrimaryKeyRelatedField(queryset=Department.objects.all())
     workshop_name = serializers.StringRelatedField(source='workshop.name', read_only=True)
 
     class Meta:
@@ -110,10 +118,11 @@ class BreakDownListSerializerFullHistory(serializers.ModelSerializer):
     machine = MachineSerializer(read_only=True)
     reporter = UserSerializer(read_only=True)
     history = BreakDownMoveSerializer(many=True, read_only=True)
+    additionalinfo = AdditionalEndingBreakDownInfoSerializer(read_only=True)
 
     class Meta:
         model = BreakDown
-        fields = ['id', 'machine', 'created_at', 'priority', 'reporter', 'description', 'history']
+        fields = ['id', 'machine', 'created_at', 'priority', 'reporter', 'description', 'history', 'additionalinfo']
 
 
 class EndBreakdownSerializer(serializers.ModelSerializer):
