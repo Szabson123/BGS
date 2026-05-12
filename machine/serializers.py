@@ -107,6 +107,7 @@ class FullBreakDownHistorySerializer(serializers.ModelSerializer):
         model = BreakDown
         fields = ['id', 'created_at', 'priority', 'reporter', 'description', 'history']
 
+
 class MachineFullListSerializer(serializers.ModelSerializer):
     breakdowns = FullBreakDownHistorySerializer(many=True, read_only=True)
     class Meta:
@@ -125,6 +126,13 @@ class BreakDownListSerializerFullHistory(serializers.ModelSerializer):
         fields = ['id', 'machine', 'created_at', 'priority', 'reporter', 'description', 'history', 'additionalinfo']
 
 
+class BreakDownInfoToMovesSerializer(serializers.ModelSerializer):
+    reporter = UserSerializer(read_only=True)
+    class Meta:
+        model = BreakDown
+        fields = ['id', 'priority', 'description', 'reporter']
+
+
 class EndBreakdownSerializer(serializers.ModelSerializer):
     closing_break_down_type = serializers.PrimaryKeyRelatedField(queryset=ClosingBreakdownTypes.objects.all())
     responsible_for_breakdown = serializers.PrimaryKeyRelatedField(queryset=ResponsibleForBreakdown.objects.all())
@@ -132,3 +140,12 @@ class EndBreakdownSerializer(serializers.ModelSerializer):
     class Meta:
         model = BreakDownMove
         fields = ['break_down', 'description', 'closing_break_down_type', 'responsible_for_breakdown']
+
+
+class BreakDownMoveToHistorySerializer(serializers.ModelSerializer):
+    user = UserSerializer(read_only=True)
+    machine = MachineMainSerializer(source='break_down.machine', read_only=True)
+    break_down = BreakDownInfoToMovesSerializer(read_only=True)
+    class Meta:
+        model = BreakDownMove
+        fields = ['id', 'user', 'status', 'description', 'created_at', 'machine', 'break_down']

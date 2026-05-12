@@ -40,3 +40,7 @@ class BreakDownFilter(filters.FilterSet):
         return queryset.annotate(
             last_status_val=Subquery(latest_status_subquery)
         ).filter(last_status_val=value)
+    
+
+class BreakDownMoveFilter(filters.FilterSet):
+    date_range = filters.DateTimeFromToRangeFilter(field_name='created_at')

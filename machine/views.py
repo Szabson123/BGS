@@ -14,9 +14,9 @@ from django_filters import rest_framework as filters
 from .models import BreakDown, BreakDownMove, Machine, ClosingBreakdownTypes, ResponsibleForBreakdown, Workshop, Department
 from .serializers import (BreakDownListSerializer, BreakDownCreateSerializer, BreakDownMovePostSerializer, MachineMainSerializer, EndBreakdownSerializer, WorkshopSerializer,
                           MachineFullListSerializer, ClosingBreakdownTypesSerializer, MachineSerializer, BreakDownListSerializerFullHistory, ResponsibleForBreakdownSerializer,
-                          FullBreakDownHistorySerializer, DepartamntSerializer)
+                          FullBreakDownHistorySerializer, DepartamntSerializer, BreakDownMoveToHistorySerializer)
 from .services import create_breakdown_with_initial_move, MoveBreakDownService, EndBreakdownService
-from .filters import BreakDownFilter
+from .filters import BreakDownFilter, BreakDownMoveFilter
 from .mixins import WorkshopContextMixin
 
 
@@ -225,3 +225,21 @@ class WorkshopViewset(viewsets.ModelViewSet):
     serializer_class = WorkshopSerializer
     queryset = Workshop.objects.all() # narazie wszystkie ptoem tylko admin/owner
 
+
+class ListOfBreakDownsMoves(ListAPIView):
+    serializer_class = BreakDownMoveToHistorySerializer
+    pagination_class = CustomPagination
+    filter_backends = [filters.DjangoFilterBackend]
+    filterset_class = BreakDownMoveFilter
+
+    def get_queryset(self):
+        user = self.request.user
+        if not hasattr(user, 'currentworkshop'):
+            return BreakDown.objects.none()
+        
+        current_workshop = user.currentworkshop.workshop
+
+        return (BreakDownMove.objects
+                .select_related('user', 'break_down__reporter', 'break_down__machine', 'break_down__machine__department', 'break_down__machine__workshop')
+                .filter(break_down__machine__workshop=current_workshop)
+                .order_by('-created_at'))

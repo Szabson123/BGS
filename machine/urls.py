@@ -22,6 +22,6 @@ urlpatterns = [
     path('move/break-down/responsible/helper/', ResponsibleForBreakdownHelper.as_view(), name='responsible-helper'),
     path('all-break-downs-to-report/', BreakDownListViewToRaport.as_view(), name='break-downs'),
     path('machines-to-current-workshop/', MachinesInCurrentWorkshop.as_view(), name='machines-to-current-workshop'),
-    path('breakdown-to-machine/<int:machine_id>/', BreakdownListToMachine.as_view(), name='breakdown-to-machine')
-
+    path('breakdown-to-machine/<int:machine_id>/', BreakdownListToMachine.as_view(), name='breakdown-to-machine'),
+    path('history-move/', ListOfBreakDownsMoves.as_view(), name='breakdown-to-machine'),
 ]
