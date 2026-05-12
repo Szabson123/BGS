@@ -130,7 +130,7 @@ class BreakDown(BaseModel):
     
 
 class AdditionalEndingBreakDownInfo(BaseModel):
-    break_down = models.OneToOneField(BreakDown, on_delete=models.CASCADE, related_name='additionalinfo')
+    break_down = models.OneToOneField(BreakDown, on_delete=models.CASCADE, related_name='additional')
     closing_break_down_type = models.ForeignKey(ClosingBreakdownTypes, on_delete=models.CASCADE)
     responsible_for_breakdown = models.ForeignKey(ResponsibleForBreakdown, on_delete=models.CASCADE)
     

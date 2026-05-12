@@ -11,7 +11,7 @@ from rest_framework.decorators import action
 from rest_framework.pagination import PageNumberPagination
 from django_filters import rest_framework as filters
 
-from .models import BreakDown, BreakDownMove, Machine, ClosingBreakdownTypes, ResponsibleForBreakdown, Workshop, Department
+from .models import BreakDown, AdditionalEndingBreakDownInfo, BreakDownMove, Machine, ClosingBreakdownTypes, ResponsibleForBreakdown, Workshop, Department
 from .serializers import (BreakDownListSerializer, BreakDownCreateSerializer, BreakDownMovePostSerializer, MachineMainSerializer, EndBreakdownSerializer, WorkshopSerializer,
                           MachineFullListSerializer, ClosingBreakdownTypesSerializer, MachineSerializer, BreakDownListSerializerFullHistory, ResponsibleForBreakdownSerializer,
                           FullBreakDownHistorySerializer, DepartamntSerializer, BreakDownMoveToHistorySerializer)
@@ -102,14 +102,10 @@ class BreakDownCreateMachineHelper(ListAPIView):
     def get_queryset(self):
         user = self.request.user
 
-        print(f'{user}------------------------------')
-
         if not hasattr(user, 'currentdepartment'):
             return Machine.objects.none()
         
         current_department = user.currentdepartment.department
-
-        print(f'{current_department}------------------------------')
     
         recent_machine_ids = (BreakDown.objects.filter(reporter=user)
                             .order_by('-created_at')
@@ -143,7 +139,7 @@ class BreakDownMakeMove(GenericAPIView):
         service = MoveBreakDownService(user=self.request.user, status_val=move_status, break_down=break_down, description=description)
         service.execute()
 
-        return Response({"success"}, status=status.HTTP_201_CREATED)
+        return Response({"detail": "success"}, status=status.HTTP_201_CREATED)
     
 
 class BreakDownMakeEndedMove(GenericAPIView):
@@ -157,7 +153,7 @@ class BreakDownMakeEndedMove(GenericAPIView):
         service = EndBreakdownService(user=self.request.user, **serializer.validated_data)
         service.execute()
 
-        return Response({"success"}, status=status.HTTP_201_CREATED)
+        return Response({"detail": "success"}, status=status.HTTP_201_CREATED)
 
 
 class BreakDownListViewToRaport(ListAPIView):
@@ -178,7 +174,10 @@ class BreakDownListViewToRaport(ListAPIView):
                 .prefetch_related(
                     Prefetch('history',
                             BreakDownMove.objects
-                            .select_related('user')))
+                            .select_related('user')),
+                    Prefetch('additionalinfo',
+                             AdditionalEndingBreakDownInfo.objects
+                            .select_related('closing_break_down_type', 'responsible_for_breakdown')))
                 .filter(machine__workshop=current_workshop)
                 .order_by('-created_at'))
     
