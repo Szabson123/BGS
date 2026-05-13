@@ -14,7 +14,7 @@ from django_filters import rest_framework as filters
 from .models import BreakDown, AdditionalEndingBreakDownInfo, BreakDownMove, Machine, ClosingBreakdownTypes, ResponsibleForBreakdown, Workshop, Department
 from .serializers import (BreakDownListSerializer, BreakDownCreateSerializer, BreakDownMovePostSerializer, MachineMainSerializer, EndBreakdownSerializer, WorkshopSerializer,
                           MachineFullListSerializer, ClosingBreakdownTypesSerializer, MachineSerializer, BreakDownListSerializerFullHistory, ResponsibleForBreakdownSerializer,
-                          FullBreakDownHistorySerializer, DepartamntSerializer, BreakDownMoveToHistorySerializer)
+                          FullBreakDownHistorySerializer, DepartamentSerializer, BreakDownMoveToHistorySerializer)
 from .services import create_breakdown_with_initial_move, MoveBreakDownService, EndBreakdownService
 from .filters import BreakDownFilter, BreakDownMoveFilter
 from .mixins import WorkshopContextMixin
@@ -26,7 +26,7 @@ class CustomPagination(PageNumberPagination):
 
 
 class DepartmentViewSet(viewsets.ModelViewSet):
-    serializer_class = DepartamntSerializer
+    serializer_class = DepartamentSerializer
     queryset = Department.objects.all()
 
 
@@ -133,7 +133,7 @@ class BreakDownMakeMove(GenericAPIView):
         break_down = serializer.validated_data['break_down']
         description = serializer.validated_data['description']
 
-        if move_status == 'ED':
+        if move_status == BreakDown.Status.ENDED:
             return Response({'error': 'You cant end with this service'}, status=status.HTTP_400_BAD_REQUEST)
 
         service = MoveBreakDownService(user=self.request.user, status_val=move_status, break_down=break_down, description=description)
@@ -156,7 +156,7 @@ class BreakDownMakeEndedMove(GenericAPIView):
         return Response({"detail": "success"}, status=status.HTTP_201_CREATED)
 
 
-class BreakDownListViewToRaport(ListAPIView):
+class BreakDownListViewToReport(ListAPIView):
     serializer_class = BreakDownListSerializerFullHistory
     pagination_class = CustomPagination
     filter_backends = [filters.DjangoFilterBackend]

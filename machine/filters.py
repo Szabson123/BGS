@@ -1,5 +1,6 @@
 from django_filters import rest_framework as filters
 from .models import BreakDown, BreakDownMove
+from user.models import CustomUser
 from django.db.models import Subquery, OuterRef
 from user.models import CustomUser
 from django.db import models
@@ -44,3 +45,9 @@ class BreakDownFilter(filters.FilterSet):
 
 class BreakDownMoveFilter(filters.FilterSet):
     date_range = filters.DateTimeFromToRangeFilter(field_name='created_at')
+    machine = filters.NumberFilter(field_name='break_down__machine__id')
+    department = filters.NumberFilter(field_name='break_down__machine__department__id')
+
+    class Meta:
+        model = BreakDownMove
+        fields = ['status', 'machine', 'department', 'user']

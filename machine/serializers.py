@@ -4,7 +4,7 @@ from .models import Workshop, Machine, BreakDown, BreakDownMove, MachineNotes, A
 from user.models import CustomUser
 
 
-class DepartamntSerializer(serializers.ModelSerializer):
+class DepartamentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Department
         fields = ['id', 'name']
