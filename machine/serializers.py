@@ -13,7 +13,7 @@ class ChoicesOptionSerializer(serializers.Serializer):
     label = serializers.CharField()
 
 
-class DepartamentSerializer(serializers.ModelSerializer):
+class DepartmentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Department
         fields = ['id', 'name']
@@ -21,10 +21,10 @@ class DepartamentSerializer(serializers.ModelSerializer):
 
 class AdditionalEndingBreakdownInfoSerializer(serializers.ModelSerializer):
     closing_breakdown_type_name = serializers.StringRelatedField(source='closing_breakdown_type.name')
-    responsible_for_Breakdown = serializers.StringRelatedField(source='responsible_for_Breakdown.name')
+    responsible_for_breakdown = serializers.StringRelatedField(source='responsible_for_breakdown.name')
     class Meta:
         model = AdditionalEndingBreakdownInfo
-        fields = ['closing_breakdown_type_name', 'responsible_for_Breakdown']
+        fields = ['closing_breakdown_type_name', 'responsible_for_breakdown']
 
 
 class ClosingBreakdownTypesSerializer(serializers.ModelSerializer):
@@ -144,11 +144,11 @@ class BreakdownInfoToMovesSerializer(serializers.ModelSerializer):
 
 class EndBreakdownSerializer(serializers.ModelSerializer):
     closing_breakdown_type = serializers.PrimaryKeyRelatedField(queryset=ClosingBreakdownTypes.objects.all())
-    responsible_for_Breakdown = serializers.PrimaryKeyRelatedField(queryset=ResponsibleForBreakdown.objects.all())
+    responsible_for_breakdown = serializers.PrimaryKeyRelatedField(queryset=ResponsibleForBreakdown.objects.all())
     
     class Meta:
         model = BreakdownMove
-        fields = ['breakdown', 'description', 'closing_breakdown_type', 'responsible_for_Breakdown']
+        fields = ['breakdown', 'description', 'closing_breakdown_type', 'responsible_for_breakdown']
 
 
 class BreakdownMoveToHistorySerializer(serializers.ModelSerializer):
@@ -174,3 +174,8 @@ class BreakdownMoveOptionResponseSerializer(serializers.Serializer):
     machines = LookupOptionSerializer(many=True)
     users = UserSerializer(many=True)
     statuses = ChoicesOptionSerializer(many=True)
+
+
+class EndBreakdownOptionsSerializer(serializers.Serializer):
+    close_types = LookupOptionSerializer(many=True)
+    responsibles = LookupOptionSerializer(many=True)

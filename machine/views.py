@@ -5,18 +5,18 @@ from django.shortcuts import get_object_or_404
 from rest_framework import viewsets, status
 from rest_framework.filters import SearchFilter
 from rest_framework.generics import ListAPIView, CreateAPIView, GenericAPIView
-from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from rest_framework.pagination import PageNumberPagination
 from django_filters import rest_framework as filters
 
-from .models import Breakdown, AdditionalEndingBreakdownInfo, BreakdownMove, Machine, ClosingBreakdownTypes, ResponsibleForBreakdown, Workshop, Department, WorkShopparticipant
+from .models import Breakdown, AdditionalEndingBreakdownInfo, BreakdownMove, Machine, ClosingBreakdownTypes, ResponsibleForBreakdown, Workshop, Department, WorkshopParticipant
 from .serializers import (BreakdownListSerializer, BreakdownCreateSerializer, BreakdownMovePostSerializer, MachineMainSerializer, EndBreakdownSerializer, WorkshopSerializer,
                           MachineFullListSerializer, ClosingBreakdownTypesSerializer, MachineSerializer, BreakdownListSerializerFullHistory, ResponsibleForBreakdownSerializer,
-                          FullBreakdownHistorySerializer, DepartamentSerializer, BreakdownMoveToHistorySerializer, BreakdownOptionsResponseSerializer, BreakdownMoveOptionResponseSerializer)
-from .services import create_Breakdown_with_initial_move, MoveBreakdownService, EndBreakdownService
+                          FullBreakdownHistorySerializer, DepartmentSerializer, BreakdownMoveToHistorySerializer, BreakdownOptionsResponseSerializer, BreakdownMoveOptionResponseSerializer,
+                          EndBreakdownOptionsSerializer)
+from .services import create_breakdown_with_initial_move, MoveBreakdownService, EndBreakdownService
 from .filters import BreakdownFilter, BreakdownMoveFilter
 from .mixins import WorkshopContextMixin, CurrentWorkshopMixin
 
@@ -29,7 +29,7 @@ class CustomPagination(PageNumberPagination):
 
 
 class DepartmentViewSet(viewsets.ModelViewSet):
-    serializer_class = DepartamentSerializer
+    serializer_class = DepartmentSerializer
     queryset = Department.objects.all()
 
 
@@ -86,7 +86,7 @@ class BreakdownCreateView(CreateAPIView):
     permission_classes = [IsAuthenticated]
 
     def perform_create(self, serializer):
-            instance = create_Breakdown_with_initial_move(
+            instance = create_breakdown_with_initial_move(
                 user=self.request.user, 
                 Breakdown_data=serializer.validated_data
             )
@@ -175,7 +175,7 @@ class BreakdownListViewToReport(CurrentWorkshopMixin, ListAPIView):
                             .select_related('user')),
                     Prefetch('additional',
                              AdditionalEndingBreakdownInfo.objects
-                            .select_related('closing_breakdown_type', 'responsible_for_Breakdown')))
+                            .select_related('closing_breakdown_type', 'responsible_for_breakdown')))
                 .order_by('-created_at'))
     
 
@@ -262,6 +262,24 @@ class BreakdownMoveOptionView(CurrentWorkshopMixin, GenericAPIView):
         }
 
         serializer = BreakdownMoveOptionResponseSerializer(data)
-
         return Response(serializer.data)
         
+
+class EndBreakdownOptionsView(CurrentWorkshopMixin, GenericAPIView):
+    serializer_class = EndBreakdownOptionsSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        workshop = self.get_workshop()
+
+        responsibles = ResponsibleForBreakdown.objects.filter(workshop=workshop).values('id', 'name')
+        close_types = ClosingBreakdownTypes.objects.filter(workshop=workshop).values('id', 'name')
+
+        data = {
+            "responsibles": responsibles,
+            "close_types": close_types
+        }
+
+        serializer = EndBreakdownOptionsSerializer(data)
+        return Response(serializer.data)
+

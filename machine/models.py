@@ -59,7 +59,7 @@ class Workshop(BaseModel):
     
 # Komentarz -> kiedy jestes participantem to możesz awarie modyfikować jesli nie jestes to nie mozesz, curentworshop jest tylko do odczytu i zgłaszania awari
 
-class WorkShopparticipant(BaseModel):
+class WorkshopParticipant(BaseModel):
     user = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name='workshopparticipant')
     workshop = models.ForeignKey(Workshop, on_delete=models.CASCADE, related_name='workshopparticipant')
 
@@ -132,7 +132,7 @@ class Breakdown(BaseModel):
 class AdditionalEndingBreakdownInfo(BaseModel):
     breakdown = models.OneToOneField(Breakdown, on_delete=models.CASCADE, related_name='additional')
     closing_breakdown_type = models.ForeignKey(ClosingBreakdownTypes, on_delete=models.CASCADE)
-    responsible_for_Breakdown = models.ForeignKey(ResponsibleForBreakdown, on_delete=models.CASCADE)
+    responsible_for_breakdown = models.ForeignKey(ResponsibleForBreakdown, on_delete=models.CASCADE)
     
 
 class BreakdownMove(BaseModel):

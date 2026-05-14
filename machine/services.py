@@ -1,10 +1,10 @@
 from django.db import transaction
 
-from .models import Breakdown, BreakdownMove, WorkShopParticipant, AdditionalEndingBreakdownInfo
+from .models import Breakdown, BreakdownMove, WorkshopParticipant, AdditionalEndingBreakdownInfo
 from rest_framework.exceptions import ValidationError
 
 
-def create_Breakdown_with_initial_move(user, Breakdown_data):
+def create_breakdown_with_initial_move(user, Breakdown_data):
     with transaction.atomic():
         breakdown = Breakdown.objects.create(reporter=user, **Breakdown_data)
         BreakdownMove.objects.create(
@@ -41,7 +41,7 @@ class MoveBreakdownService():
 
     def check_is_user_participant(self):
         try:
-            participant = WorkShopParticipant.objects.get(
+            participant = WorkshopParticipant.objects.get(
                 user = self.user,
                 workshop = self.breakdown.machine.workshop
             )
@@ -59,12 +59,12 @@ class MoveBreakdownService():
 
 
 class EndBreakdownService():
-    def __init__(self, user, breakdown, description, closing_breakdown_type, responsible_for_Breakdown):
+    def __init__(self, user, breakdown, description, closing_breakdown_type, responsible_for_breakdown):
         self.user = user
         self.breakdown = breakdown
         self.description = description
         self.closing_types = closing_breakdown_type
-        self.responsible_people = responsible_for_Breakdown
+        self.responsible_people = responsible_for_breakdown
     
     @transaction.atomic
     def execute(self):
@@ -81,7 +81,7 @@ class EndBreakdownService():
         ending_info = AdditionalEndingBreakdownInfo.objects.create(
                 breakdown=self.breakdown,
                 closing_breakdown_type=self.closing_types,
-                responsible_for_Breakdown=self.responsible_people
+                responsible_for_breakdown=self.responsible_people
             )
         
         ending_info.save()
@@ -89,7 +89,7 @@ class EndBreakdownService():
 
     def check_is_user_participant(self):
         try:
-            participant = WorkShopParticipant.objects.get(
+            participant = WorkshopParticipant.objects.get(
                 user = self.user,
                 workshop = self.breakdown.machine.workshop
             )
