@@ -59,7 +59,7 @@ class Workshop(BaseModel):
     
 # Komentarz -> kiedy jestes participantem to możesz awarie modyfikować jesli nie jestes to nie mozesz, curentworshop jest tylko do odczytu i zgłaszania awari
 
-class WorkShopParticipant(BaseModel):
+class WorkShopparticipant(BaseModel):
     user = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name='workshopparticipant')
     workshop = models.ForeignKey(Workshop, on_delete=models.CASCADE, related_name='workshopparticipant')
 
