@@ -110,9 +110,9 @@ class MachineNotes(BaseModel):
 
 class BreakDown(BaseModel):
     class Priority(models.TextChoices):
-        NONE = 'NONE', 'None'
-        MID = 'MID', 'Mid'
-        HIGH = 'HIGH', 'High'
+        NONE = 'NONE', 'Brak'
+        MID = 'MID', 'Średni'
+        HIGH = 'HIGH', 'Wysoki'
 
     machine = models.ForeignKey(Machine, on_delete=models.CASCADE, related_name='breakdowns')
     priority = models.CharField(max_length=4, choices=Priority, default=Priority.NONE)
@@ -137,9 +137,9 @@ class AdditionalEndingBreakDownInfo(BaseModel):
 
 class BreakDownMove(BaseModel):
     class Status(models.TextChoices):
-        REPORTED = 'RP', 'Reported'
-        STARTED = 'ST', 'Started'
-        ENDED = 'ED', 'Ended'
+        REPORTED = 'RP', 'Zgłoszony'
+        STARTED = 'ST', 'W Naprawie'
+        ENDED = 'ED', 'Zakończony'
 
     break_down = models.ForeignKey(BreakDown, on_delete=models.CASCADE, related_name='history')
     user = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True)

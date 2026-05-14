@@ -4,6 +4,15 @@ from .models import Workshop, Machine, BreakDown, BreakDownMove, MachineNotes, A
 from user.models import CustomUser
 
 
+class LookupOptionSerializer(serializers.Serializer):
+    id = serializers.IntegerField()
+    name = serializers.CharField()
+
+class ChoicesOptionSerializer(serializers.Serializer):
+    value = serializers.CharField()
+    label = serializers.CharField()
+
+
 class DepartamentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Department
@@ -119,11 +128,11 @@ class BreakDownListSerializerFullHistory(serializers.ModelSerializer):
     machine = MachineSerializer(read_only=True)
     reporter = UserSerializer(read_only=True)
     history = BreakDownMoveSerializer(many=True, read_only=True)
-    additionalinfo = AdditionalEndingBreakDownInfoSerializer(read_only=True)
+    additional = AdditionalEndingBreakDownInfoSerializer(read_only=True)
 
     class Meta:
         model = BreakDown
-        fields = ['id', 'machine', 'created_at', 'priority', 'reporter', 'description', 'history', 'additionalinfo']
+        fields = ['id', 'machine', 'created_at', 'priority', 'reporter', 'description', 'history', 'additional']
 
 
 class BreakDownInfoToMovesSerializer(serializers.ModelSerializer):
@@ -149,3 +158,19 @@ class BreakDownMoveToHistorySerializer(serializers.ModelSerializer):
     class Meta:
         model = BreakDownMove
         fields = ['id', 'user', 'status', 'description', 'created_at', 'machine', 'break_down']
+
+
+class BreakdownOptionsResponseSerializer(serializers.Serializer):
+    priorities = ChoicesOptionSerializer(many=True)
+    statuses = ChoicesOptionSerializer(many=True)
+
+    machines = LookupOptionSerializer(many=True)
+    close_types = LookupOptionSerializer(many=True)
+    responsibles = LookupOptionSerializer(many=True)
+
+
+class BreakdownMoveOptionResponseSerializer(serializers.Serializer):
+    departments = LookupOptionSerializer(many=True)
+    machines = LookupOptionSerializer(many=True)
+    users = UserSerializer(many=True)
+    statuses = ChoicesOptionSerializer(many=True)

@@ -22,10 +22,12 @@ class BreakDownFilter(filters.FilterSet):
     )
 
     search = filters.CharFilter(method='filter_by_all_descriptions', label='Szukaj w opisach')
+    close_type = filters.NumberFilter(field_name='additional__closing_break_down_type__id')
+    responsible = filters.NumberFilter(field_name='additional__responsible_for_breakdown__id')
 
     class Meta:
         model = BreakDown
-        fields = ['priority', 'reporter', 'machine']
+        fields = ['priority', 'reporter', 'machine', 'close_type', 'responsible']
 
     def filter_by_all_descriptions(self, queryset, name, value):
         return queryset.filter(
@@ -44,7 +46,7 @@ class BreakDownFilter(filters.FilterSet):
     
 
 class BreakDownMoveFilter(filters.FilterSet):
-    date_range = filters.DateTimeFromToRangeFilter(field_name='created_at')
+    date = filters.DateTimeFromToRangeFilter(field_name='created_at', label='Data zgłoszenia (od-do)')
     machine = filters.NumberFilter(field_name='break_down__machine__id')
     department = filters.NumberFilter(field_name='break_down__machine__department__id')
 
