@@ -12,12 +12,12 @@ from rest_framework.decorators import action
 from rest_framework.pagination import PageNumberPagination
 from django_filters import rest_framework as filters
 
-from .models import BreakDown, AdditionalEndingBreakDownInfo, BreakDownMove, Machine, ClosingBreakdownTypes, ResponsibleForBreakdown, Workshop, Department, WorkShopParticipant
-from .serializers import (BreakDownListSerializer, BreakDownCreateSerializer, BreakDownMovePostSerializer, MachineMainSerializer, EndBreakdownSerializer, WorkshopSerializer,
-                          MachineFullListSerializer, ClosingBreakdownTypesSerializer, MachineSerializer, BreakDownListSerializerFullHistory, ResponsibleForBreakdownSerializer,
-                          FullBreakDownHistorySerializer, DepartamentSerializer, BreakDownMoveToHistorySerializer, BreakdownOptionsResponseSerializer, BreakdownMoveOptionResponseSerializer)
-from .services import create_breakdown_with_initial_move, MoveBreakDownService, EndBreakdownService
-from .filters import BreakDownFilter, BreakDownMoveFilter
+from .models import Breakdown, AdditionalEndingBreakdownInfo, BreakdownMove, Machine, ClosingBreakdownTypes, ResponsibleForBreakdown, Workshop, Department, WorkShopParticipant
+from .serializers import (BreakdownListSerializer, BreakdownCreateSerializer, BreakdownMovePostSerializer, MachineMainSerializer, EndBreakdownSerializer, WorkshopSerializer,
+                          MachineFullListSerializer, ClosingBreakdownTypesSerializer, MachineSerializer, BreakdownListSerializerFullHistory, ResponsibleForBreakdownSerializer,
+                          FullBreakdownHistorySerializer, DepartamentSerializer, BreakdownMoveToHistorySerializer, BreakdownOptionsResponseSerializer, BreakdownMoveOptionResponseSerializer)
+from .services import create_Breakdown_with_initial_move, MoveBreakdownService, EndBreakdownService
+from .filters import BreakdownFilter, BreakdownMoveFilter
 from .mixins import WorkshopContextMixin, CurrentWorkshopMixin
 
 from user.models import CustomUser
@@ -58,41 +58,41 @@ class MachineViewSet(viewsets.ModelViewSet):
 
 
 class BreakdownListToMachine(ListAPIView):
-    serializer_class =  FullBreakDownHistorySerializer
+    serializer_class =  FullBreakdownHistorySerializer
     pagination_class = CustomPagination
     
     def get_queryset(self):
         machine_id = self.kwargs.get('machine_id')
-        queryset = BreakDown.objects.select_related('reporter', 'machine').prefetch_related(
+        queryset = Breakdown.objects.select_related('reporter', 'machine').prefetch_related(
             Prefetch(
                 'history',
-                queryset=BreakDownMove.objects.select_related('user')
+                queryset=BreakdownMove.objects.select_related('user')
             )
         ).filter(machine=machine_id).order_by('-created_at')
 
         return queryset
 
 
-class BreakDownListView(ListAPIView):
-    serializer_class = BreakDownListSerializer
+class BreakdownListView(ListAPIView):
+    serializer_class = BreakdownListSerializer
     permission_classes = [IsAuthenticated]
     
     def get_queryset(self):
-        return BreakDown.objects.with_last_status().exclude(history__status=BreakDownMove.Status.ENDED).order_by('-created_at')
+        return Breakdown.objects.with_last_status().exclude(history__status=BreakdownMove.Status.ENDED).order_by('-created_at')
         
 
-class BreakDownCreateView(CreateAPIView):
-    serializer_class = BreakDownCreateSerializer
+class BreakdownCreateView(CreateAPIView):
+    serializer_class = BreakdownCreateSerializer
     permission_classes = [IsAuthenticated]
 
     def perform_create(self, serializer):
-            instance = create_breakdown_with_initial_move(
+            instance = create_Breakdown_with_initial_move(
                 user=self.request.user, 
-                breakdown_data=serializer.validated_data
+                Breakdown_data=serializer.validated_data
             )
 
 
-class BreakDownCreateMachineHelper(ListAPIView):
+class BreakdownCreateMachineHelper(ListAPIView):
     serializer_class = MachineSerializer
     queryset = Machine.objects.none()
     permission_classes = [IsAuthenticated]
@@ -107,7 +107,7 @@ class BreakDownCreateMachineHelper(ListAPIView):
         
         current_department = user.currentdepartment.department
     
-        recent_machine_ids = (BreakDown.objects.filter(reporter=user)
+        recent_machine_ids = (Breakdown.objects.filter(reporter=user)
                             .order_by('-created_at')
                             .values_list('machine_id', flat=True)
                             .distinct()[:3])
@@ -121,8 +121,8 @@ class BreakDownCreateMachineHelper(ListAPIView):
         ).order_by('-priority_group', 'name')
         
 
-class BreakDownMakeMove(GenericAPIView):
-    serializer_class = BreakDownMovePostSerializer
+class BreakdownMakeMove(GenericAPIView):
+    serializer_class = BreakdownMovePostSerializer
     permission_classes = [IsAuthenticated]
 
     def post(self, request, *args, **kwargs):
@@ -130,19 +130,19 @@ class BreakDownMakeMove(GenericAPIView):
         serializer.is_valid(raise_exception=True)
 
         move_status = serializer.validated_data['status'] 
-        break_down = serializer.validated_data['break_down']
+        breakdown = serializer.validated_data['breakdown']
         description = serializer.validated_data['description']
 
-        if move_status == BreakDownMove.Status.ENDED:
+        if move_status == BreakdownMove.Status.ENDED:
             return Response({'error': 'You cant end with this service'}, status=status.HTTP_400_BAD_REQUEST)
 
-        service = MoveBreakDownService(user=self.request.user, status_val=move_status, break_down=break_down, description=description)
+        service = MoveBreakdownService(user=self.request.user, status_val=move_status, breakdown=breakdown, description=description)
         service.execute()
 
         return Response({"detail": "success"}, status=status.HTTP_201_CREATED)
     
 
-class BreakDownMakeEndedMove(GenericAPIView):
+class BreakdownMakeEndedMove(GenericAPIView):
     serializer_class = EndBreakdownSerializer
     permission_classes = [IsAuthenticated]
 
@@ -156,12 +156,12 @@ class BreakDownMakeEndedMove(GenericAPIView):
         return Response({"detail": "success"}, status=status.HTTP_201_CREATED)
 
 
-class BreakDownListViewToReport(CurrentWorkshopMixin, ListAPIView):
-    queryset = BreakDown.objects.all()
-    serializer_class = BreakDownListSerializerFullHistory
+class BreakdownListViewToReport(CurrentWorkshopMixin, ListAPIView):
+    queryset = Breakdown.objects.all()
+    serializer_class = BreakdownListSerializerFullHistory
     pagination_class = CustomPagination
     filter_backends = [filters.DjangoFilterBackend]
-    filterset_class = BreakDownFilter
+    filterset_class = BreakdownFilter
     workshop_lookup_field = 'machine__workshop'
 
     def get_queryset(self):
@@ -171,15 +171,15 @@ class BreakDownListViewToReport(CurrentWorkshopMixin, ListAPIView):
                 .select_related('machine', 'reporter')
                 .prefetch_related(
                     Prefetch('history',
-                            BreakDownMove.objects
+                            BreakdownMove.objects
                             .select_related('user')),
                     Prefetch('additional',
-                             AdditionalEndingBreakDownInfo.objects
-                            .select_related('closing_break_down_type', 'responsible_for_breakdown')))
+                             AdditionalEndingBreakdownInfo.objects
+                            .select_related('closing_breakdown_type', 'responsible_for_Breakdown')))
                 .order_by('-created_at'))
     
 
-class ClosingBreakDownTypesViewset(WorkshopContextMixin, viewsets.ModelViewSet):
+class ClosingBreakdownTypesViewset(WorkshopContextMixin, viewsets.ModelViewSet):
     serializer_class = ClosingBreakdownTypesSerializer
     queryset = ClosingBreakdownTypes.objects.all()
 
@@ -191,21 +191,21 @@ class ResponsibleForBreakdownViewset(WorkshopContextMixin, viewsets.ModelViewSet
 
 class WorkshopViewset(viewsets.ModelViewSet):
     serializer_class = WorkshopSerializer
-    queryset = Workshop.objects.all() # narazie wszystkie ptoem tylko admin/owner
+    queryset = Workshop.objects.all()
 
 
-class ListOfBreakDownsMoves(ListAPIView):
-    serializer_class = BreakDownMoveToHistorySerializer
+class ListOfBreakdownsMoves(ListAPIView):
+    serializer_class = BreakdownMoveToHistorySerializer
     pagination_class = CustomPagination
     filter_backends = [filters.DjangoFilterBackend]
-    filterset_class = BreakDownMoveFilter
-    workshop_lookup_field = 'break_down__machine__workshop'
-    queryset = BreakDownMove.objects.all()
+    filterset_class = BreakdownMoveFilter
+    workshop_lookup_field = 'breakdown__machine__workshop'
+    queryset = BreakdownMove.objects.all()
 
     def get_queryset(self):
         qs = super().get_queryset()
         return (qs
-                .select_related('user', 'break_down__reporter', 'break_down__machine', 'break_down__machine__department', 'break_down__machine__workshop')
+                .select_related('user', 'breakdown__reporter', 'breakdown__machine', 'breakdown__machine__department', 'breakdown__machine__workshop')
                 .order_by('-created_at'))
     
 class BreakdownOptionsView(CurrentWorkshopMixin, GenericAPIView):
@@ -222,8 +222,8 @@ class BreakdownOptionsView(CurrentWorkshopMixin, GenericAPIView):
         responsibles = ResponsibleForBreakdown.objects.filter(workshop=workshop).values('id', 'name')
         close_types = ClosingBreakdownTypes.objects.filter(workshop=workshop).values('id', 'name')
 
-        priorities = [{"value": k, "label": v} for k, v in BreakDown.Priority.choices]
-        statuses = [{"value": k, "label": v} for k, v in BreakDownMove.Status.choices]
+        priorities = [{"value": k, "label": v} for k, v in Breakdown.Priority.choices]
+        statuses = [{"value": k, "label": v} for k, v in BreakdownMove.Status.choices]
 
         data = {
             "machines": machines,
@@ -252,7 +252,7 @@ class BreakdownMoveOptionView(CurrentWorkshopMixin, GenericAPIView):
 
         users = CustomUser.objects.filter(workshopparticipant__workshop=workshop)
 
-        statuses = [{"value": k, "label": v} for k, v in BreakDownMove.Status.choices]
+        statuses = [{"value": k, "label": v} for k, v in BreakdownMove.Status.choices]
 
         data = {
             "departments": departments,

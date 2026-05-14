@@ -1,16 +1,16 @@
 from django_filters import rest_framework as filters
-from .models import BreakDown, BreakDownMove
+from .models import Breakdown, BreakdownMove
 from user.models import CustomUser
 from django.db.models import Subquery, OuterRef
 from user.models import CustomUser
 from django.db import models
 
 
-class BreakDownFilter(filters.FilterSet):
+class BreakdownFilter(filters.FilterSet):
     date_range = filters.DateTimeFromToRangeFilter(field_name='created_at', label='Data zgłoszenia (od-do)')
 
     status = filters.ChoiceFilter(
-        choices=BreakDownMove.Status.choices,
+        choices=BreakdownMove.Status.choices,
         method='filter_by_last_status',
         label='Zawiera status w historii'
     )
@@ -22,11 +22,11 @@ class BreakDownFilter(filters.FilterSet):
     )
 
     search = filters.CharFilter(method='filter_by_all_descriptions', label='Szukaj w opisach')
-    close_type = filters.NumberFilter(field_name='additional__closing_break_down_type__id')
-    responsible = filters.NumberFilter(field_name='additional__responsible_for_breakdown__id')
+    close_type = filters.NumberFilter(field_name='additional__closing_breakdown_type__id')
+    responsible = filters.NumberFilter(field_name='additional__responsible_for_Breakdown__id')
 
     class Meta:
-        model = BreakDown
+        model = Breakdown
         fields = ['priority', 'reporter', 'machine', 'close_type', 'responsible']
 
     def filter_by_all_descriptions(self, queryset, name, value):
@@ -36,8 +36,8 @@ class BreakDownFilter(filters.FilterSet):
         ).distinct()
     
     def filter_by_last_status(self, queryset, name, value):
-        latest_status_subquery = BreakDownMove.objects.filter(
-            break_down=OuterRef('pk')
+        latest_status_subquery = BreakdownMove.objects.filter(
+            breakdown=OuterRef('pk')
         ).order_by('-created_at').values('status')[:1]
 
         return queryset.annotate(
@@ -45,11 +45,11 @@ class BreakDownFilter(filters.FilterSet):
         ).filter(last_status_val=value)
     
 
-class BreakDownMoveFilter(filters.FilterSet):
+class BreakdownMoveFilter(filters.FilterSet):
     date = filters.DateTimeFromToRangeFilter(field_name='created_at', label='Data zgłoszenia (od-do)')
-    machine = filters.NumberFilter(field_name='break_down__machine__id')
-    department = filters.NumberFilter(field_name='break_down__machine__department__id')
+    machine = filters.NumberFilter(field_name='breakdown__machine__id')
+    department = filters.NumberFilter(field_name='breakdown__machine__department__id')
 
     class Meta:
-        model = BreakDownMove
+        model = BreakdownMove
         fields = ['status', 'machine', 'department', 'user']

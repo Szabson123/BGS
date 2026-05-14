@@ -17,11 +17,11 @@ class MachineQuerySet(models.QuerySet):
         if workshop:
             queryset = self.select_related('department').prefetch_related(
                 Prefetch(
-                    'breakdowns',
-                    queryset=BreakDown.objects.select_related('reporter').prefetch_related(
+                    'Breakdowns',
+                    queryset=Breakdown.objects.select_related('reporter').prefetch_related(
                         Prefetch(
                             'history',
-                            queryset=BreakDownMove.objects.select_related('user')
+                            queryset=BreakdownMove.objects.select_related('user')
                         )
                     ).filter(department__workshop=workshop).order_by('-created_at')
                 )
@@ -30,12 +30,12 @@ class MachineQuerySet(models.QuerySet):
         else:
             return self.none()
     
-class BreakDownQuerySet(models.QuerySet):
+class BreakdownQuerySet(models.QuerySet):
     def with_last_status(self):
-        statuses = BreakDownMove.objects.select_related('user').annotate(
+        statuses = BreakdownMove.objects.select_related('user').annotate(
             row_number=Window( # Deklaracja Wiaderka
                 expression=RowNumber(), # Deklaracja że będziemy numerować rzędy w "Wiaderku"
-                partition_by=F('break_down_id'), # Liczby będą niezależne od obiektu BreakDown czyli bedziemy restować nasze liczby co breakdown
+                partition_by=F('breakdown_id'), # Liczby będą niezależne od obiektu Breakdown czyli bedziemy restować nasze liczby co Breakdown
                 order_by=F('created_at').desc()
             )
         ).filter(row_number=1) # Wycinamy wszystko oprócz naszej jedynki 2. W moim Django 6.0 działa natywnie w Postgresql
@@ -108,17 +108,17 @@ class MachineNotes(BaseModel):
     description = models.CharField(max_length=1025)
 
 
-class BreakDown(BaseModel):
+class Breakdown(BaseModel):
     class Priority(models.TextChoices):
         NONE = 'NONE', 'Brak'
         MID = 'MID', 'Średni'
         HIGH = 'HIGH', 'Wysoki'
 
-    machine = models.ForeignKey(Machine, on_delete=models.CASCADE, related_name='breakdowns')
+    machine = models.ForeignKey(Machine, on_delete=models.CASCADE, related_name='Breakdowns')
     priority = models.CharField(max_length=4, choices=Priority, default=Priority.NONE)
-    reporter = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='breakdowns')
+    reporter = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='Breakdowns')
     description = models.CharField(max_length=1024, null=True, blank=True)
-    objects = BreakDownQuerySet.as_manager()
+    objects = BreakdownQuerySet.as_manager()
 
     class Meta:
         indexes = [
@@ -129,19 +129,19 @@ class BreakDown(BaseModel):
         return f"{self.machine.name} {self.created_at}"
     
 
-class AdditionalEndingBreakDownInfo(BaseModel):
-    break_down = models.OneToOneField(BreakDown, on_delete=models.CASCADE, related_name='additional')
-    closing_break_down_type = models.ForeignKey(ClosingBreakdownTypes, on_delete=models.CASCADE)
-    responsible_for_breakdown = models.ForeignKey(ResponsibleForBreakdown, on_delete=models.CASCADE)
+class AdditionalEndingBreakdownInfo(BaseModel):
+    breakdown = models.OneToOneField(Breakdown, on_delete=models.CASCADE, related_name='additional')
+    closing_breakdown_type = models.ForeignKey(ClosingBreakdownTypes, on_delete=models.CASCADE)
+    responsible_for_Breakdown = models.ForeignKey(ResponsibleForBreakdown, on_delete=models.CASCADE)
     
 
-class BreakDownMove(BaseModel):
+class BreakdownMove(BaseModel):
     class Status(models.TextChoices):
         REPORTED = 'RP', 'Zgłoszony'
         STARTED = 'ST', 'W Naprawie'
         ENDED = 'ED', 'Zakończony'
 
-    break_down = models.ForeignKey(BreakDown, on_delete=models.CASCADE, related_name='history')
+    breakdown = models.ForeignKey(Breakdown, on_delete=models.CASCADE, related_name='history')
     user = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True)
     status = models.CharField(max_length=2, choices=Status)
     description = models.CharField(max_length=1024, null=True, blank=True)
@@ -151,9 +151,9 @@ class BreakDownMove(BaseModel):
         indexes = [
             models.Index(fields=['created_at']),
             models.Index(fields=['status']),
-            models.Index(fields=['break_down', '-created_at']),
+            models.Index(fields=['breakdown', '-created_at']),
         ]
 
     def __str__(self):
-        return f"{self.break_down.machine.name} - {self.status} {self.created_at}"
+        return f"{self.breakdown.machine.name} - {self.status} {self.created_at}"
     

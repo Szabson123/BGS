@@ -7,25 +7,25 @@ router = DefaultRouter()
 router.register(r'machines/(?P<workshop_id>\d+)', MachineViewSet, basename='machines')
 router.register(r'workshops', WorkshopViewset, basename='workshops')
 router.register(r'department', DepartmentViewSet, basename='deparment')
-router.register(r'closing-breakdown-types/(?P<workshop_id>\d+)', ClosingBreakDownTypesViewset, basename='closing-breakdown-types')
-router.register(r'responsible-for-breakdown/(?P<workshop_id>\d+)', ResponsibleForBreakdownViewset, basename='responsible-for-breakdown')
+router.register(r'closing-Breakdown-types/(?P<workshop_id>\d+)', ClosingBreakdownTypesViewset, basename='closing-Breakdown-types')
+router.register(r'responsible-for-Breakdown/(?P<workshop_id>\d+)', ResponsibleForBreakdownViewset, basename='responsible-for-Breakdown')
 
 
 urlpatterns = [
     path('', include(router.urls)),
-    path('create/break-down/', BreakDownCreateView.as_view(), name='craete-break-down'),
-    path('move/break-down/', BreakDownMakeMove.as_view(), name='move-break-down'),
-    path('end/break-down/', BreakDownMakeEndedMove.as_view(), name='end-break-down'),
+    path('create/breakdown/', BreakdownCreateView.as_view(), name='craete-break-down'),
+    path('move/breakdown/', BreakdownMakeMove.as_view(), name='move-break-down'),
+    path('end/breakdown/', BreakdownMakeEndedMove.as_view(), name='end-break-down'),
 
     path('machines-to-current-workshop/', MachinesInCurrentWorkshop.as_view(), name='machines-to-current-workshop'),
-    path('breakdown-to-machine/<int:machine_id>/', BreakdownListToMachine.as_view(), name='breakdown-to-machine'),
+    path('breakdown-to-machine/<int:machine_id>/', BreakdownListToMachine.as_view(), name='Breakdown-to-machine'),
 
-    path('all-break-downs-to-report/', BreakDownListViewToReport.as_view(), name='break-downs'),
-    path('history-move/', ListOfBreakDownsMoves.as_view(), name='breakdown-to-machine'),
-    path('all-break-downs/', BreakDownListView.as_view(), name='break-downs'),
+    path('all-breakdowns-to-report/', BreakdownListViewToReport.as_view(), name='break-downs'),
+    path('history-move/', ListOfBreakdownsMoves.as_view(), name='Breakdown-to-machine'),
+    path('all-break-downs/', BreakdownListView.as_view(), name='break-downs'),
     
-    path('breakdown/raport/options/', BreakdownOptionsView.as_view(), name='breakdown-raport-options'),
-    path('breakdown/moves/options/', BreakdownMoveOptionView.as_view(), name='breakdown-moves-options'),
-    path('breakdown/create/options/', BreakDownCreateMachineHelper.as_view(), name='move-break-down'),
+    path('breakdown/raport/options/', BreakdownOptionsView.as_view(), name='Breakdown-raport-options'),
+    path('breakdown/moves/options/', BreakdownMoveOptionView.as_view(), name='Breakdown-moves-options'),
+    path('breakdown/create/options/', BreakdownCreateMachineHelper.as_view(), name='move-break-down'),
 
 ]
