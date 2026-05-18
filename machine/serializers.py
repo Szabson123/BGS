@@ -1,6 +1,7 @@
 from rest_framework import serializers
+from rest_framework.validators import UniqueTogetherValidator
 
-from .models import Workshop, Machine, Breakdown, BreakdownMove, MachineNotes, AdditionalEndingBreakdownInfo, ResponsibleForBreakdown, ClosingBreakdownTypes, Department
+from .models import Workshop, Machine, Breakdown, BreakdownMove, MachineNotes, AdditionalEndingBreakdownInfo, ResponsibleForBreakdown, ClosingBreakdownTypes, Department, WorkshopParticipant
 from user.models import CustomUser
 
 
@@ -179,3 +180,24 @@ class BreakdownMoveOptionResponseSerializer(serializers.Serializer):
 class EndBreakdownOptionsSerializer(serializers.Serializer):
     close_types = LookupOptionSerializer(many=True)
     responsibles = LookupOptionSerializer(many=True)
+
+
+class WorkshopParticipantSerializer(serializers.ModelSerializer):
+    user = serializers.PrimaryKeyRelatedField(queryset=CustomUser.objects.all(), write_only=True)
+    user_full_name = UserSerializer(read_only=True, source='user')
+
+    class Meta:
+        model = WorkshopParticipant
+        fields = ['id', 'user', 'user_full_name', 'workshop']
+        extra_kwargs = {'workshop': {'read_only': True}}
+
+    def validate(self, data):
+        workshop_id = self.context['view'].kwargs.get('workshop_id')
+        user = data.get('user')
+
+        if WorkshopParticipant.objects.filter(workshop_id=workshop_id, user=user).exists():
+            raise serializers.ValidationError(
+                {"user": "Ten użytkownik już należy do warsztatu"}
+            )
+        
+        return data

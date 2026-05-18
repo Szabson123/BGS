@@ -15,7 +15,7 @@ from .models import Breakdown, AdditionalEndingBreakdownInfo, BreakdownMove, Mac
 from .serializers import (BreakdownListSerializer, BreakdownCreateSerializer, BreakdownMovePostSerializer, MachineMainSerializer, EndBreakdownSerializer, WorkshopSerializer,
                           MachineFullListSerializer, ClosingBreakdownTypesSerializer, MachineSerializer, BreakdownListSerializerFullHistory, ResponsibleForBreakdownSerializer,
                           FullBreakdownHistorySerializer, DepartmentSerializer, BreakdownMoveToHistorySerializer, BreakdownOptionsResponseSerializer, BreakdownMoveOptionResponseSerializer,
-                          EndBreakdownOptionsSerializer)
+                          EndBreakdownOptionsSerializer, WorkshopParticipantSerializer, UserSerializer)
 from .services import create_breakdown_with_initial_move, MoveBreakdownService, EndBreakdownService
 from .filters import BreakdownFilter, BreakdownMoveFilter
 from .mixins import WorkshopContextMixin, CurrentWorkshopMixin
@@ -282,4 +282,29 @@ class EndBreakdownOptionsView(CurrentWorkshopMixin, GenericAPIView):
 
         serializer = EndBreakdownOptionsSerializer(data)
         return Response(serializer.data)
+
+
+class WorkshopParticipantViewset(viewsets.ModelViewSet):
+    serializer_class = WorkshopParticipantSerializer
+    queryset = WorkshopParticipant.objects.all()
+
+    def get_queryset(self):
+        workshop_id = self.kwargs.get('workshop_id')
+        qs = WorkshopParticipant.objects.select_related('user', 'workshop').filter(workshop=workshop_id)
+        return qs
+    
+    def perform_create(self, serializer):
+        workshop_id = self.kwargs.get('workshop_id')
+        workshop = get_object_or_404(Workshop, pk=workshop_id)
+        serializer.save(workshop=workshop)
+    
+    @action(detail=False, methods=['get'], serializer_class=UserSerializer)
+    def get_available_users_to_add(self, request, *args, **kwargs):
+        workshop_id = self.kwargs.get('workshop_id')
+        
+        qs = CustomUser.objects.exclude(workshopparticipant__workshop_id=workshop_id)
+
+        serializer = self.get_serializer(qs, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+    
 
