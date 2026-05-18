@@ -14,6 +14,11 @@ class ChoicesOptionSerializer(serializers.Serializer):
     label = serializers.CharField()
 
 
+class UserSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CustomUser
+        fields = ['id', 'first_name', 'last_name', 'number']
+
 class DepartmentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Department
@@ -53,9 +58,10 @@ class MachineSerializer(serializers.ModelSerializer):
 
 
 class MachineNotesSerializer(serializers.ModelSerializer):
+    created_by = UserSerializer(read_only=True)
     class Meta:
         model = MachineNotes
-        fields = ['id', 'description']
+        fields = ['id', 'description', 'file', 'created_by', 'created_at']
 
 
 class MachineMainSerializer(serializers.ModelSerializer):
@@ -66,12 +72,6 @@ class MachineMainSerializer(serializers.ModelSerializer):
     class Meta:
         model = Machine
         fields = ['id', 'name', 'alias', 'phase_id', 'sigip_num', 'department_name', 'department', 'workshop_name']
-
-
-class UserSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = CustomUser
-        fields = ['id', 'first_name', 'last_name', 'number']
 
 
 class BreakdownMoveSerializer(serializers.ModelSerializer):

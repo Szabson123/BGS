@@ -10,6 +10,7 @@ router.register(r'department', DepartmentViewSet, basename='department')
 router.register(r'closing-breakdown-types/(?P<workshop_id>\d+)', ClosingBreakdownTypesViewset, basename='closing-breakdown-types')
 router.register(r'responsible-for-breakdown/(?P<workshop_id>\d+)', ResponsibleForBreakdownViewset, basename='responsible-for-breakdown')
 router.register(r'participants/(?P<workshop_id>\d+)', WorkshopParticipantViewset, basename='participants')
+router.register(r'notes/(?P<machine_id>\d+)', MachineNotesViewSet, basename='notes')
 
 
 urlpatterns = [

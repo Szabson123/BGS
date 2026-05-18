@@ -10,12 +10,14 @@ from rest_framework.response import Response
 from rest_framework.decorators import action
 from rest_framework.pagination import PageNumberPagination
 from django_filters import rest_framework as filters
+from rest_framework.parsers import MultiPartParser, FormParser
 
-from .models import Breakdown, AdditionalEndingBreakdownInfo, BreakdownMove, Machine, ClosingBreakdownTypes, ResponsibleForBreakdown, Workshop, Department, WorkshopParticipant
+from .models import (Breakdown, AdditionalEndingBreakdownInfo, BreakdownMove, Machine, ClosingBreakdownTypes, ResponsibleForBreakdown, Workshop, Department, WorkshopParticipant,
+                     MachineNotes)
 from .serializers import (BreakdownListSerializer, BreakdownCreateSerializer, BreakdownMovePostSerializer, MachineMainSerializer, EndBreakdownSerializer, WorkshopSerializer,
                           MachineFullListSerializer, ClosingBreakdownTypesSerializer, MachineSerializer, BreakdownListSerializerFullHistory, ResponsibleForBreakdownSerializer,
                           FullBreakdownHistorySerializer, DepartmentSerializer, BreakdownMoveToHistorySerializer, BreakdownOptionsResponseSerializer, BreakdownMoveOptionResponseSerializer,
-                          EndBreakdownOptionsSerializer, WorkshopParticipantSerializer, UserSerializer)
+                          EndBreakdownOptionsSerializer, WorkshopParticipantSerializer, UserSerializer, MachineNotesSerializer)
 from .services import create_breakdown_with_initial_move, MoveBreakdownService, EndBreakdownService
 from .filters import BreakdownFilter, BreakdownMoveFilter
 from .mixins import WorkshopContextMixin, CurrentWorkshopMixin
@@ -308,3 +310,14 @@ class WorkshopParticipantViewset(viewsets.ModelViewSet):
         return Response(serializer.data, status=status.HTTP_200_OK)
     
 
+class MachineNotesViewSet(viewsets.ModelViewSet):
+    queryset = MachineNotes.objects.select_related('created_by').order_by('-created_at')
+    serializer_class = MachineNotesSerializer
+    permission_classes = [IsAuthenticated]
+    
+    parser_classes = [MultiPartParser, FormParser]
+
+    def perform_create(self, serializer):
+        machine_id = self.kwargs.get('machine_id')
+        machine = get_object_or_404(Machine, pk=machine_id)
+        serializer.save(created_by=self.request.user, machine=machine)

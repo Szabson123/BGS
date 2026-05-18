@@ -105,7 +105,9 @@ class ResponsibleForBreakdown(BaseModel):
 
 class MachineNotes(BaseModel):
     machine = models.ForeignKey(Machine, on_delete=models.CASCADE, related_name='notes')
-    description = models.CharField(max_length=1025)
+    description = models.CharField(max_length=10000, null=True, blank=True)
+    file = models.FileField(null=True, blank=True, upload_to='machine/notes')
+    created_by = models.ForeignKey(CustomUser, on_delete=models.CASCADE)
 
 
 class Breakdown(BaseModel):
@@ -114,9 +116,9 @@ class Breakdown(BaseModel):
         MID = 'MID', 'Średni'
         HIGH = 'HIGH', 'Wysoki'
 
-    machine = models.ForeignKey(Machine, on_delete=models.CASCADE, related_name='Breakdowns')
+    machine = models.ForeignKey(Machine, on_delete=models.CASCADE, related_name='breakdowns')
     priority = models.CharField(max_length=4, choices=Priority, default=Priority.NONE)
-    reporter = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='Breakdowns')
+    reporter = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='breakdowns')
     description = models.CharField(max_length=1024, null=True, blank=True)
     objects = BreakdownQuerySet.as_manager()
 
@@ -157,3 +159,29 @@ class BreakdownMove(BaseModel):
     def __str__(self):
         return f"{self.breakdown.machine.name} - {self.status} {self.created_at}"
     
+
+class MachineInspection(BaseModel):
+    machine = models.ForeignKey(Machine, on_delete=models.CASCADE, related_name='inspections')
+    date = models.DateTimeField()
+    responsible = models.ForeignKey(CustomUser, on_delete=models.CASCADE)
+    responsible_text = models.CharField(max_length=255)
+
+
+class MachineInspectionMoveDateLog(BaseModel):
+    machine_inspection = models.ForeignKey(Machine, on_delete=models.CASCADE, related_name='logs')
+    who = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True)
+    old_date = models.DateTimeField()
+
+
+class WorkshopInspectionsPreset(BaseModel):
+    workshop = models.ForeignKey(Workshop, on_delete=models.CASCADE)
+    name = models.CharField(max_length=255)
+    machine = models.ForeignKey(Machine, null=True, blank=True, on_delete=models.SET_NULL)
+
+
+class WorkshopInspectionsPresetField(BaseModel):
+    class AvaibleTypes(models.TextChoices):
+        BOOL = 'TF', 'True/False'
+    preset = models.ForeignKey(WorkshopInspectionsPreset, on_delete=models.CASCADE)
+    text = models.CharField(max_length=255)
+    type = models.CharField(choices=AvaibleTypes, max_length=5)
