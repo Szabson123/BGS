@@ -30,4 +30,7 @@ urlpatterns = [
     path('breakdown/moves/options/', BreakdownMoveOptionView.as_view(), name='breakdown-moves-options'),
     path('breakdown/create/options/', BreakdownCreateMachineHelper.as_view(), name='move-break-down'),
     path('breakdown/end-modal/options/', EndBreakdownOptionsView.as_view(), name='move-break-down'),
+
+    path('ur/profile/dashboard/', URProfilePanel.as_view(), name='ur-profile-dashoboard'),
+    path('change-current-workshop/', ChangingCurrentWorkshop.as_view(), name='change-current-workshop'),
 ]

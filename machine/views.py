@@ -13,11 +13,11 @@ from django_filters import rest_framework as filters
 from rest_framework.parsers import MultiPartParser, FormParser
 
 from .models import (Breakdown, AdditionalEndingBreakdownInfo, BreakdownMove, Machine, ClosingBreakdownTypes, ResponsibleForBreakdown, Workshop, Department, WorkshopParticipant,
-                     MachineNotes)
+                     MachineNotes, CurrentWorkshop)
 from .serializers import (BreakdownListSerializer, BreakdownCreateSerializer, BreakdownMovePostSerializer, MachineMainSerializer, EndBreakdownSerializer, WorkshopSerializer,
                           MachineFullListSerializer, ClosingBreakdownTypesSerializer, MachineSerializer, BreakdownListSerializerFullHistory, ResponsibleForBreakdownSerializer,
                           FullBreakdownHistorySerializer, DepartmentSerializer, BreakdownMoveToHistorySerializer, BreakdownOptionsResponseSerializer, BreakdownMoveOptionResponseSerializer,
-                          EndBreakdownOptionsSerializer, WorkshopParticipantSerializer, UserSerializer, MachineNotesSerializer)
+                          EndBreakdownOptionsSerializer, WorkshopParticipantSerializer, UserSerializer, MachineNotesSerializer, URProfilePanelSerializer)
 from .services import create_breakdown_with_initial_move, MoveBreakdownService, EndBreakdownService
 from .filters import BreakdownFilter, BreakdownMoveFilter
 from .mixins import WorkshopContextMixin, CurrentWorkshopMixin
@@ -35,14 +35,15 @@ class DepartmentViewSet(viewsets.ModelViewSet):
     queryset = Department.objects.all()
 
 
-class MachinesInCurrentWorkshop(ListAPIView):
+class MachinesInCurrentWorkshop(CurrentWorkshopMixin, ListAPIView):
     serializer_class = MachineMainSerializer
     permission_classes = [IsAuthenticated]
     queryset = Machine.objects.all()
+    workshop_lookup_field = 'workshop'
     
     def get_queryset(self):
         qs = super().get_queryset()
-        return Machine.objects.select_related('workshop', 'department')
+        return qs.select_related('workshop', 'department')
     
 
 class MachineViewSet(viewsets.ModelViewSet):
@@ -75,12 +76,15 @@ class BreakdownListToMachine(ListAPIView):
         return queryset
 
 
-class BreakdownListView(ListAPIView):
+class BreakdownListView(CurrentWorkshopMixin, ListAPIView):
     serializer_class = BreakdownListSerializer
     permission_classes = [IsAuthenticated]
+    workshop_lookup_field = 'machine__workshop'
+    queryset = Breakdown.objects.all()
     
     def get_queryset(self):
-        return Breakdown.objects.with_last_status().exclude(history__status=BreakdownMove.Status.ENDED).order_by('-created_at')
+        qs = super().get_queryset()
+        return qs.with_last_status().exclude(history__status=BreakdownMove.Status.ENDED).order_by('-created_at')
         
 
 class BreakdownCreateView(CreateAPIView):
@@ -196,7 +200,7 @@ class WorkshopViewset(viewsets.ModelViewSet):
     queryset = Workshop.objects.all()
 
 
-class ListOfBreakdownsMoves(ListAPIView):
+class ListOfBreakdownsMoves(CurrentWorkshopMixin, ListAPIView):
     serializer_class = BreakdownMoveToHistorySerializer
     pagination_class = CustomPagination
     filter_backends = [filters.DjangoFilterBackend]
@@ -321,3 +325,57 @@ class MachineNotesViewSet(viewsets.ModelViewSet):
         machine_id = self.kwargs.get('machine_id')
         machine = get_object_or_404(Machine, pk=machine_id)
         serializer.save(created_by=self.request.user, machine=machine)
+
+
+class URProfilePanel(GenericAPIView):
+    serializer_class = URProfilePanelSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = self.request.user
+
+        current_workshop = get_object_or_404(CurrentWorkshop, user=user)
+        avaible_workshops = Workshop.objects.filter(workshopparticipant__user=user)
+
+        data = {
+            'current_workshop': current_workshop,
+            'avaible_workshops': avaible_workshops,
+            'user': user
+        }
+
+        serializer = URProfilePanelSerializer(data)
+
+        return Response(serializer.data)
+
+
+class ChangingCurrentWorkshop(GenericAPIView):
+    
+    def post(self, request, *args, **kwargs):
+        user = self.request.user
+        workshop_id = request.data.get('workshop_id')
+
+        if not workshop_id:
+            return Response(
+                {"error": "Wymagane pole 'workshop_id'."}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            workshop_obj = Workshop.objects.get(id=workshop_id)
+        except Workshop.DoesNotExist:
+            return Response(
+                {"error": "Podany warsztat nie istnieje."}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        current_workshop, created = CurrentWorkshop.objects.update_or_create(
+            user=user,
+            defaults={'workshop': workshop_obj}
+        )
+
+        message = "Utworzono nowy aktualny warsztat." if created else "Zaktualizowano aktualny warsztat."
+        
+        return Response(
+            {"message": message, "workshop_id": current_workshop.workshop.id}, 
+            status=status.HTTP_200_OK if not created else status.HTTP_201_CREATED
+        )

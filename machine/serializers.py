@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from rest_framework.validators import UniqueTogetherValidator
 
-from .models import Workshop, Machine, Breakdown, BreakdownMove, MachineNotes, AdditionalEndingBreakdownInfo, ResponsibleForBreakdown, ClosingBreakdownTypes, Department, WorkshopParticipant
+from .models import Workshop, CurrentWorkshop, Machine, Breakdown, BreakdownMove, MachineNotes, AdditionalEndingBreakdownInfo, ResponsibleForBreakdown, ClosingBreakdownTypes, Department, WorkshopParticipant
 from user.models import CustomUser
 
 
@@ -175,6 +175,18 @@ class BreakdownMoveOptionResponseSerializer(serializers.Serializer):
     machines = LookupOptionSerializer(many=True)
     users = UserSerializer(many=True)
     statuses = ChoicesOptionSerializer(many=True)
+
+
+class CurrentWorkshopSerializer(serializers.ModelSerializer):
+    workshop = WorkshopSerializer(read_only=True)
+    class Meta:
+        model = CurrentWorkshop
+        fields = ['id', 'workshop']
+
+class URProfilePanelSerializer(serializers.Serializer):
+    current_workshop = CurrentWorkshopSerializer(many=False)
+    avaible_workshops = WorkshopSerializer(many=True)
+    user = UserSerializer(many=False)
 
 
 class EndBreakdownOptionsSerializer(serializers.Serializer):

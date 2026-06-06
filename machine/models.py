@@ -17,7 +17,7 @@ class MachineQuerySet(models.QuerySet):
         if workshop:
             queryset = self.select_related('department').prefetch_related(
                 Prefetch(
-                    'Breakdowns',
+                    'breakdowns',
                     queryset=Breakdown.objects.select_related('reporter').prefetch_related(
                         Prefetch(
                             'history',
