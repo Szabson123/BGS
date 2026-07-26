@@ -1,6 +1,7 @@
-from django.db.models import Prefetch, Case, When, Value, IntegerField
+from django.db.models import Prefetch, Case, When, Value, IntegerField, Q
 from django_filters.rest_framework import DjangoFilterBackend
 from django.shortcuts import get_object_or_404
+from django.db import transaction
 
 from rest_framework import viewsets, status
 from rest_framework.filters import SearchFilter
@@ -13,14 +14,15 @@ from django_filters import rest_framework as filters
 from rest_framework.parsers import MultiPartParser, FormParser
 
 from .models import (Breakdown, AdditionalEndingBreakdownInfo, BreakdownMove, Machine, ClosingBreakdownTypes, ResponsibleForBreakdown, Workshop, Department, WorkshopParticipant,
-                     MachineNotes, CurrentWorkshop)
+                     MachineNotes, CurrentWorkshop, CurrentDepartment)
 from .serializers import (BreakdownListSerializer, BreakdownCreateSerializer, BreakdownMovePostSerializer, MachineMainSerializer, EndBreakdownSerializer, WorkshopSerializer,
                           MachineFullListSerializer, ClosingBreakdownTypesSerializer, MachineSerializer, BreakdownListSerializerFullHistory, ResponsibleForBreakdownSerializer,
                           FullBreakdownHistorySerializer, DepartmentSerializer, BreakdownMoveToHistorySerializer, BreakdownOptionsResponseSerializer, BreakdownMoveOptionResponseSerializer,
-                          EndBreakdownOptionsSerializer, WorkshopParticipantSerializer, UserSerializer, MachineNotesSerializer, URProfilePanelSerializer)
+                          EndBreakdownOptionsSerializer, WorkshopParticipantSerializer, UserSerializer, MachineNotesSerializer, URProfilePanelSerializer, DepartmentToggleSerializer)
 from .services import create_breakdown_with_initial_move, MoveBreakdownService, EndBreakdownService
 from .filters import BreakdownFilter, BreakdownMoveFilter
-from .mixins import WorkshopContextMixin, CurrentWorkshopMixin
+from .mixins import WorkshopContextMixin, CurrentWorkshopMixin, CurrentDepartmentsMixin
+from .permissions import IsURAdminOrOwnerOrReadOnlyParticipant
 
 from user.models import CustomUser
 
@@ -100,7 +102,6 @@ class BreakdownCreateView(CreateAPIView):
 
 class BreakdownCreateMachineHelper(ListAPIView):
     serializer_class = MachineSerializer
-    queryset = Machine.objects.none()
     permission_classes = [IsAuthenticated]
     filter_backends = [SearchFilter]
     search_fields = ['name', 'alias']
@@ -108,17 +109,23 @@ class BreakdownCreateMachineHelper(ListAPIView):
     def get_queryset(self):
         user = self.request.user
 
-        if not hasattr(user, 'currentdepartment'):
+        current_department_ids = list(
+            user.currentdepartments.values_list('department_id', flat=True)
+        )
+
+        if not current_department_ids:
             return Machine.objects.none()
-        
-        current_department = user.currentdepartment.department
-    
-        recent_machine_ids = (Breakdown.objects.filter(reporter=user)
-                            .order_by('-created_at')
-                            .values_list('machine_id', flat=True)
-                            .distinct()[:3])
-            
-        return Machine.objects.filter(department=current_department).annotate(
+
+        recent_machine_ids = list(
+            Breakdown.objects.filter(reporter=user)
+            .order_by('-created_at')
+            .values_list('machine_id', flat=True)
+            .distinct()[:3]
+        )
+
+        return Machine.objects.filter(
+            department_id__in=current_department_ids
+        ).annotate(
             priority_group=Case(
                 When(id__in=recent_machine_ids, then=Value(1)),
                 default=Value(0),
@@ -197,7 +204,33 @@ class ResponsibleForBreakdownViewset(WorkshopContextMixin, viewsets.ModelViewSet
 
 class WorkshopViewset(viewsets.ModelViewSet):
     serializer_class = WorkshopSerializer
-    queryset = Workshop.objects.all()
+    permission_classes = [IsURAdminOrOwnerOrReadOnlyParticipant]
+
+    def get_queryset(self):
+        user = self.request.user
+
+        if not user or not user.is_authenticated:
+            return Workshop.objects.none()
+
+        if user.is_superuser or user.groups.filter(name__in=['ur_admin', 'ur_owner']).exists():
+            return Workshop.objects.filter(
+                    Q(workshopparticipant__user=user) | Q(owner=user)
+                ).distinct()
+
+    def perform_create(self, serializer):
+        user = self.request.user
+
+        with transaction.atomic():
+            # 1. Zapisujemy warsztat ustawiając zalogowanego użytkownika jako ownera
+            workshop = serializer.save(owner=user)
+
+            # 2. Automatycznie dodajemy twórcę jako uczestnika (WorkshopParticipant)
+            WorkshopParticipant.objects.get_or_create(
+                user=user,
+                workshop=workshop
+            )
+
+        
 
 
 class ListOfBreakdownsMoves(CurrentWorkshopMixin, ListAPIView):
@@ -379,3 +412,86 @@ class ChangingCurrentWorkshop(GenericAPIView):
             {"message": message, "workshop_id": current_workshop.workshop.id}, 
             status=status.HTTP_200_OK if not created else status.HTTP_201_CREATED
         )
+
+
+class ToggleCurrentDepartmentView(GenericAPIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        department_id = request.data.get('department_id')
+        user = request.user
+
+        if not department_id:
+            return Response({"detail": "department_id jest wymagane."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            department = Department.objects.get(id=department_id)
+        except Department.DoesNotExist:
+            return Response({"detail": "Departament nie istnieje."}, status=status.HTTP_404_NOT_FOUND)
+
+        current_dept = CurrentDepartment.objects.filter(user=user, department=department).first()
+
+        if current_dept:
+            current_dept.delete()
+            return Response({
+                "detail": f"Odłączono z departamentu: {department.name}",
+                "department_id": department.id,
+                "is_active": False
+            }, status=status.HTTP_200_OK)
+        
+        else:
+            CurrentDepartment.objects.create(user=user, department=department)
+            return Response({
+                "detail": f"Dołączono do departamentu: {department.name}",
+                "department_id": department.id,
+                "is_active": True
+            }, status=status.HTTP_200_OK)
+
+
+class DepartmentListView(GenericAPIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        departments = Department.objects.all()
+
+        selected_ids = set(
+            CurrentDepartment.objects.filter(user=request.user)
+            .values_list('department_id', flat=True)
+        )
+
+        serializer = DepartmentToggleSerializer(
+            departments, 
+            many=True, 
+            context={'request': request, 'selected_department_ids': selected_ids}
+        )
+        return Response(serializer.data)
+
+
+class BreakdownListViewForDepartments(CurrentDepartmentsMixin, ListAPIView):
+    queryset = Breakdown.objects.all()
+    serializer_class = BreakdownListSerializerFullHistory
+    pagination_class = CustomPagination
+    permission_classes = [IsAuthenticated]
+    filter_backends = [filters.DjangoFilterBackend]
+    filterset_class = BreakdownFilter
+    department_lookup_field = 'machine__department_id__in'
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+
+        return (qs
+                .select_related('machine', 'reporter')
+                .prefetch_related(
+                    Prefetch(
+                        'history',
+                        queryset=BreakdownMove.objects.select_related('user')
+                    ),
+                    Prefetch(
+                        'additional',
+                        queryset=AdditionalEndingBreakdownInfo.objects.select_related(
+                            'closing_breakdown_type', 
+                            'responsible_for_breakdown'
+                        )
+                    )
+                )
+                .order_by('-created_at'))

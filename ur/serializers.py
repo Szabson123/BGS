@@ -17,7 +17,7 @@ class ChoicesOptionSerializer(serializers.Serializer):
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = CustomUser
-        fields = ['id', 'first_name', 'last_name', 'number']
+        fields = ['id', 'first_name', 'last_name', 'number', 'is_active']
 
 class DepartmentSerializer(serializers.ModelSerializer):
     class Meta:
@@ -54,7 +54,7 @@ class WorkshopSerializer(serializers.ModelSerializer):
 class MachineSerializer(serializers.ModelSerializer):
     class Meta:
         model = Machine
-        fields = ['id', 'name', 'alias']
+        fields = ['id', 'name', 'alias', 'sigip_num']
 
 
 class MachineNotesSerializer(serializers.ModelSerializer):
@@ -183,6 +183,7 @@ class CurrentWorkshopSerializer(serializers.ModelSerializer):
         model = CurrentWorkshop
         fields = ['id', 'workshop']
 
+
 class URProfilePanelSerializer(serializers.Serializer):
     current_workshop = CurrentWorkshopSerializer(many=False)
     avaible_workshops = WorkshopSerializer(many=True)
@@ -213,3 +214,21 @@ class WorkshopParticipantSerializer(serializers.ModelSerializer):
             )
         
         return data
+
+
+class DepartmentToggleSerializer(serializers.ModelSerializer):
+    is_selected = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Department
+        fields = ['id', 'name', 'is_selected']
+
+    def get_is_selected(self, obj):
+        user = self.context['request'].user
+        if not user.is_authenticated:
+            return False
+        
+        selected_department_ids = self.context.get('selected_department_ids', set())
+        return obj.id in selected_department_ids
+
+

@@ -11,6 +11,8 @@ class CustomUser(AbstractUser):
     card_code = models.CharField(max_length=255, blank=True, null=True, unique=True)
     number = models.CharField(max_length=255, null=True, blank=True)
     main_page = models.CharField(choices=MainPageUser, max_length=255, default=MainPageUser.Breakdown_CRATE)
+    is_active = models.BooleanField(default=False)
+    is_in_change_password = models.BooleanField(default=True)
 
     def __str__(self):
         return self.username

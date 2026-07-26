@@ -74,8 +74,14 @@ class Department(BaseModel):
 
 
 class CurrentDepartment(BaseModel):
-    user = models.OneToOneField(CustomUser, on_delete=models.CASCADE, related_name='currentdepartment')
-    department = models.ForeignKey(Department, on_delete=models.CASCADE, related_name='currentdepartment')
+    user = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name='currentdepartments')
+    department = models.ForeignKey(Department, on_delete=models.CASCADE, related_name='currentdepartments')
+
+    class Meta:
+        unique_together = ('user', 'department')
+
+    def __str__(self):
+        return f"{self.user.username} -> {self.department.name}"
 
 
 class Machine(BaseModel):

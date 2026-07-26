@@ -33,4 +33,8 @@ urlpatterns = [
 
     path('ur/profile/dashboard/', URProfilePanel.as_view(), name='ur-profile-dashoboard'),
     path('change-current-workshop/', ChangingCurrentWorkshop.as_view(), name='change-current-workshop'),
+    path('toggle-department/', ToggleCurrentDepartmentView.as_view(), name='change-current-workshop'),
+
+    path('actuall-departments/', DepartmentListView.as_view(), name='department-list'),
+    path('breakdowns/by-departments/', BreakdownListViewForDepartments.as_view(), name='breakdown-list-by-departments'),
 ]

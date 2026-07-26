@@ -27,7 +27,7 @@ INSTALLED_APPS = [
     'django_filters',
 
     'user',
-    'machine',
+    'ur',
     'operatorknowlage',
 ]
 
