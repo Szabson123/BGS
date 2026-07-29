@@ -17,7 +17,7 @@ class ChoicesOptionSerializer(serializers.Serializer):
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = CustomUser
-        fields = ['id', 'first_name', 'last_name', 'number', 'is_active']
+        fields = ['id', 'first_name', 'last_name', 'number', 'is_active', 'username']
 
 class DepartmentSerializer(serializers.ModelSerializer):
     class Meta:
