@@ -26,10 +26,6 @@ class CurrentWorkshopMixin:
 
 
 class CurrentDepartmentsMixin:
-    """
-    Mixin filtrujący QuerySet po maszynach przypisanych do AKTUALNIE WYBRANYCH
-    departamentów użytkownika (user.currentdepartments).
-    """
     department_lookup_field = 'machine__department_id__in'
 
     def get_user_department_ids(self):

@@ -348,7 +348,6 @@ class WorkshopParticipantViewset(viewsets.ModelViewSet):
     
 
 class MachineNotesViewSet(viewsets.ModelViewSet):
-    queryset = MachineNotes.objects.select_related('created_by').order_by('-created_at')
     serializer_class = MachineNotesSerializer
     permission_classes = [IsAuthenticated]
     
@@ -358,6 +357,9 @@ class MachineNotesViewSet(viewsets.ModelViewSet):
         machine_id = self.kwargs.get('machine_id')
         machine = get_object_or_404(Machine, pk=machine_id)
         serializer.save(created_by=self.request.user, machine=machine)
+
+    def get_queryset(self):
+        return MachineNotes.objects.select_related('created_by').filter(machine_id=self.kwargs.get('machine_id')).order_by('-created_at')
 
 
 class URProfilePanel(GenericAPIView):
