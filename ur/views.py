@@ -14,12 +14,13 @@ from django_filters import rest_framework as filters
 from rest_framework.parsers import MultiPartParser, FormParser
 
 from .models import (Breakdown, AdditionalEndingBreakdownInfo, BreakdownMove, Machine, ClosingBreakdownTypes, ResponsibleForBreakdown, Workshop, Department, WorkshopParticipant,
-                     MachineNotes, CurrentWorkshop, CurrentDepartment)
+                     MachineNotes, CurrentWorkshop, CurrentDepartment, WorkSchedulePreset, ScheduleBreak)
 from .serializers import (BreakdownListSerializer, BreakdownCreateSerializer, BreakdownMovePostSerializer, MachineMainSerializer, EndBreakdownSerializer, WorkshopSerializer,
                           MachineFullListSerializer, ClosingBreakdownTypesSerializer, MachineSerializer, BreakdownListSerializerFullHistory, ResponsibleForBreakdownSerializer,
                           FullBreakdownHistorySerializer, DepartmentSerializer, BreakdownMoveToHistorySerializer, BreakdownOptionsResponseSerializer, BreakdownMoveOptionResponseSerializer,
-                          EndBreakdownOptionsSerializer, WorkshopParticipantSerializer, UserSerializer, MachineNotesSerializer, URProfilePanelSerializer, DepartmentToggleSerializer)
-from .services import create_breakdown_with_initial_move, MoveBreakdownService, EndBreakdownService
+                          EndBreakdownOptionsSerializer, WorkshopParticipantSerializer, UserSerializer, MachineNotesSerializer, URProfilePanelSerializer, DepartmentToggleSerializer,
+                          WorkSchedulePresetSerializer, ScheduleBreakSerializer, MachineSetScheduleSerializer)
+from .services import create_breakdown_with_initial_move, MoveBreakdownService, EndBreakdownService, get_machine_break_status
 from .filters import BreakdownFilter, BreakdownMoveFilter
 from .mixins import WorkshopContextMixin, CurrentWorkshopMixin, CurrentDepartmentsMixin
 from .permissions import IsURAdminOrOwnerOrReadOnlyParticipant
@@ -497,3 +498,76 @@ class BreakdownListViewForDepartments(CurrentDepartmentsMixin, ListAPIView):
                     )
                 )
                 .order_by('-created_at'))
+
+
+class WorkSchedulePresetViewSet(viewsets.ModelViewSet):
+    serializer_class = WorkSchedulePresetSerializer
+    queryset = WorkSchedulePreset.objects.prefetch_related('breaks').all()
+    permission_classes = [IsAuthenticated]
+    filter_backends = [filters.DjangoFilterBackend]
+    filterset_fields = ['machine', 'is_active']
+
+    def perform_create(self, serializer):
+        machine_id = self.request.data.get('machine')
+        if machine_id:
+            machine = get_object_or_404(Machine, pk=machine_id)
+            serializer.save(machine=machine)
+        else:
+            serializer.save()
+
+    @action(detail=True, methods=['post'])
+    def activate(self, request, pk=None):
+        preset = self.get_object()
+        with transaction.atomic():
+            WorkSchedulePreset.objects.filter(machine=preset.machine).update(is_active=False)
+            preset.is_active = True
+            preset.save()
+        return Response(self.get_serializer(preset).data, status=status.HTTP_200_OK)
+
+
+class ScheduleBreakViewSet(viewsets.ModelViewSet):
+    serializer_class = ScheduleBreakSerializer
+    queryset = ScheduleBreak.objects.all()
+    permission_classes = [IsAuthenticated]
+    filter_backends = [filters.DjangoFilterBackend]
+    filterset_fields = ['preset']
+
+
+class MachineBreakStatusView(GenericAPIView):
+    permission_classes = []
+
+    def get(self, request, machine_id):
+        machine = get_object_or_404(
+            Machine.objects.prefetch_related('schedules__breaks'),
+            pk=machine_id
+        )
+        status_data = get_machine_break_status(machine)
+        return Response(status_data, status=status.HTTP_200_OK)
+
+
+class MachineSetScheduleView(GenericAPIView):
+    serializer_class = MachineSetScheduleSerializer
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, machine_id):
+        machine = get_object_or_404(Machine, pk=machine_id)
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        preset_id = serializer.validated_data.get('schedule_preset_id')
+        with transaction.atomic():
+            WorkSchedulePreset.objects.filter(machine=machine).update(is_active=False)
+            active_name = None
+            if preset_id is not None:
+                preset = get_object_or_404(WorkSchedulePreset, pk=preset_id, machine=machine)
+                preset.is_active = True
+                preset.save()
+                active_name = preset.name
+
+        return Response({
+            "message": "Tryb pracy maszyny został zaktualizowany.",
+            "machine_id": machine.id,
+            "machine_name": machine.name,
+            "active_schedule_id": preset_id,
+            "active_schedule_name": active_name
+        }, status=status.HTTP_200_OK)

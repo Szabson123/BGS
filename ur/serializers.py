@@ -1,7 +1,9 @@
 from rest_framework import serializers
 from rest_framework.validators import UniqueTogetherValidator
 
-from .models import Workshop, CurrentWorkshop, Machine, Breakdown, BreakdownMove, MachineNotes, AdditionalEndingBreakdownInfo, ResponsibleForBreakdown, ClosingBreakdownTypes, Department, WorkshopParticipant
+from .models import (Workshop, CurrentWorkshop, Machine, Breakdown, BreakdownMove, MachineNotes, 
+                     AdditionalEndingBreakdownInfo, ResponsibleForBreakdown, ClosingBreakdownTypes, 
+                     Department, WorkshopParticipant, WorkSchedulePreset, ScheduleBreak)
 from user.models import CustomUser
 
 
@@ -12,6 +14,27 @@ class LookupOptionSerializer(serializers.Serializer):
 class ChoicesOptionSerializer(serializers.Serializer):
     value = serializers.CharField()
     label = serializers.CharField()
+
+
+class ScheduleBreakSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ScheduleBreak
+        fields = ['id', 'preset', 'name', 'start_time', 'duration_minutes', 'order']
+        extra_kwargs = {'preset': {'required': False}}
+
+
+class WorkSchedulePresetSerializer(serializers.ModelSerializer):
+    breaks = ScheduleBreakSerializer(many=True, read_only=True)
+    machine_name = serializers.StringRelatedField(source='machine.name', read_only=True)
+
+    class Meta:
+        model = WorkSchedulePreset
+        fields = ['id', 'machine', 'machine_name', 'name', 'description', 'shift_duration_hours', 'is_active', 'breaks']
+        extra_kwargs = {'machine': {'required': False}}
+
+
+class MachineSetScheduleSerializer(serializers.Serializer):
+    schedule_preset_id = serializers.IntegerField(required=False, allow_null=True)
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -52,9 +75,20 @@ class WorkshopSerializer(serializers.ModelSerializer):
 
 
 class MachineSerializer(serializers.ModelSerializer):
+    active_schedule_name = serializers.SerializerMethodField()
+    active_schedule_id = serializers.SerializerMethodField()
+
     class Meta:
         model = Machine
-        fields = ['id', 'name', 'alias', 'sigip_num']
+        fields = ['id', 'name', 'alias', 'sigip_num', 'active_schedule_id', 'active_schedule_name']
+
+    def get_active_schedule_name(self, obj):
+        active = obj.schedules.filter(is_active=True).first()
+        return active.name if active else None
+
+    def get_active_schedule_id(self, obj):
+        active = obj.schedules.filter(is_active=True).first()
+        return active.id if active else None
 
 
 class MachineNotesSerializer(serializers.ModelSerializer):
@@ -68,10 +102,21 @@ class MachineMainSerializer(serializers.ModelSerializer):
     department_name = serializers.StringRelatedField(source='department.name', read_only=True)
     department = serializers.PrimaryKeyRelatedField(queryset=Department.objects.all())
     workshop_name = serializers.StringRelatedField(source='workshop.name', read_only=True)
+    active_schedule_name = serializers.SerializerMethodField()
+    active_schedule_id = serializers.SerializerMethodField()
+    schedules = WorkSchedulePresetSerializer(many=True, read_only=True)
 
     class Meta:
         model = Machine
-        fields = ['id', 'name', 'alias', 'phase_id', 'sigip_num', 'department_name', 'department', 'workshop_name']
+        fields = ['id', 'name', 'alias', 'phase_id', 'sigip_num', 'department_name', 'department', 'workshop_name', 'active_schedule_id', 'active_schedule_name', 'schedules']
+
+    def get_active_schedule_name(self, obj):
+        active = obj.schedules.filter(is_active=True).first()
+        return active.name if active else None
+
+    def get_active_schedule_id(self, obj):
+        active = obj.schedules.filter(is_active=True).first()
+        return active.id if active else None
 
 
 class BreakdownMoveSerializer(serializers.ModelSerializer):
