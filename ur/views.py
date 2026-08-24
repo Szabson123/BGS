@@ -500,17 +500,41 @@ class BreakdownListViewForDepartments(CurrentDepartmentsMixin, ListAPIView):
                 .order_by('-created_at'))
 
 
-class WorkSchedulePresetViewSet(viewsets.ModelViewSet):
+class MachinesInCurrentDepartments(CurrentDepartmentsMixin, ListAPIView):
+    serializer_class = MachineMainSerializer
+    permission_classes = [IsAuthenticated]
+    queryset = Machine.objects.all()
+    department_lookup_field = 'department_id__in'
+    
+    def get_queryset(self):
+        qs = super().get_queryset()
+        return qs.select_related('workshop', 'department').prefetch_related('schedules__breaks')
+
+
+class WorkSchedulePresetViewSet(CurrentDepartmentsMixin, viewsets.ModelViewSet):
     serializer_class = WorkSchedulePresetSerializer
-    queryset = WorkSchedulePreset.objects.prefetch_related('breaks').all()
+    queryset = WorkSchedulePreset.objects.prefetch_related('breaks').select_related('machine', 'machine__department').all()
     permission_classes = [IsAuthenticated]
     filter_backends = [filters.DjangoFilterBackend]
     filterset_fields = ['machine', 'is_active']
+    department_lookup_field = 'machine__department_id__in'
+
+    def get_queryset(self):
+        dept_ids = self.get_user_department_ids()
+        qs = super(CurrentDepartmentsMixin, self).get_queryset()
+        if not dept_ids:
+            return qs.none()
+        return qs.filter(Q(machine__department_id__in=dept_ids) | Q(machine__isnull=True))
 
     def perform_create(self, serializer):
         machine_id = self.request.data.get('machine')
         if machine_id:
-            machine = get_object_or_404(Machine, pk=machine_id)
+            user = self.request.user
+            dept_ids = list(user.currentdepartments.values_list('department_id', flat=True))
+            if dept_ids:
+                machine = get_object_or_404(Machine, pk=machine_id, department_id__in=dept_ids)
+            else:
+                machine = get_object_or_404(Machine, pk=machine_id)
             serializer.save(machine=machine)
         else:
             serializer.save()
@@ -525,12 +549,20 @@ class WorkSchedulePresetViewSet(viewsets.ModelViewSet):
         return Response(self.get_serializer(preset).data, status=status.HTTP_200_OK)
 
 
-class ScheduleBreakViewSet(viewsets.ModelViewSet):
+class ScheduleBreakViewSet(CurrentDepartmentsMixin, viewsets.ModelViewSet):
     serializer_class = ScheduleBreakSerializer
-    queryset = ScheduleBreak.objects.all()
+    queryset = ScheduleBreak.objects.select_related('preset__machine').all()
     permission_classes = [IsAuthenticated]
     filter_backends = [filters.DjangoFilterBackend]
     filterset_fields = ['preset']
+    department_lookup_field = 'preset__machine__department_id__in'
+
+    def get_queryset(self):
+        dept_ids = self.get_user_department_ids()
+        qs = super(CurrentDepartmentsMixin, self).get_queryset()
+        if not dept_ids:
+            return qs.none()
+        return qs.filter(Q(preset__machine__department_id__in=dept_ids) | Q(preset__machine__isnull=True))
 
 
 class MachineBreakStatusView(GenericAPIView):

@@ -194,3 +194,128 @@ class MachineBreakScheduleTests(TestCase):
         self.assertEqual(data['current_schedule']['id'], preset_id)
 
 
+class CurrentDepartmentScheduleTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = CustomUser.objects.create_user(username='deptuser', password='password123')
+        self.workshop = Workshop.objects.create(name='Warsztat UR', owner=self.user)
+
+        # 3 Departments
+        self.dept1 = Department.objects.create(name='Wytłaczarki')
+        self.dept2 = Department.objects.create(name='Wtryskarki')
+        self.dept3 = Department.objects.create(name='Pakowanie')
+
+        # Machines in departments
+        self.machine_dept1 = Machine.objects.create(
+            name='Wytłaczarka #1',
+            workshop=self.workshop,
+            department=self.dept1
+        )
+        self.machine_dept2 = Machine.objects.create(
+            name='Wtryskarka #1',
+            workshop=self.workshop,
+            department=self.dept2
+        )
+        self.machine_dept3 = Machine.objects.create(
+            name='Pakowarka #1',
+            workshop=self.workshop,
+            department=self.dept3
+        )
+
+        # Presets for machines
+        self.preset_dept1 = WorkSchedulePreset.objects.create(
+            machine=self.machine_dept1,
+            name='Harmonogram Wytłaczarka',
+            shift_duration_hours=8,
+            is_active=True
+        )
+        self.break_dept1 = ScheduleBreak.objects.create(
+            preset=self.preset_dept1,
+            name='Przerwa Wytłaczarki',
+            start_time=time(10, 0),
+            duration_minutes=15
+        )
+
+        self.preset_dept2 = WorkSchedulePreset.objects.create(
+            machine=self.machine_dept2,
+            name='Harmonogram Wtryskarka',
+            shift_duration_hours=12,
+            is_active=True
+        )
+        self.break_dept2 = ScheduleBreak.objects.create(
+            preset=self.preset_dept2,
+            name='Przerwa Wtryskarki',
+            start_time=time(11, 0),
+            duration_minutes=20
+        )
+
+        self.preset_dept3 = WorkSchedulePreset.objects.create(
+            machine=self.machine_dept3,
+            name='Harmonogram Pakowanie',
+            shift_duration_hours=8,
+            is_active=True
+        )
+        self.break_dept3 = ScheduleBreak.objects.create(
+            preset=self.preset_dept3,
+            name='Przerwa Pakowanie',
+            start_time=time(12, 0),
+            duration_minutes=30
+        )
+
+    def test_machines_in_current_departments_empty_when_no_dept(self):
+        self.client.force_authenticate(user=self.user)
+        response = self.client.get('/api/ur/machines-to-current-departments/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.json()), 0)
+
+    def test_machines_in_current_departments_single_department(self):
+        from .models import CurrentDepartment
+        CurrentDepartment.objects.create(user=self.user, department=self.dept1)
+
+        self.client.force_authenticate(user=self.user)
+        response = self.client.get('/api/ur/machines-to-current-departments/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        machines = response.json()
+        self.assertEqual(len(machines), 1)
+        self.assertEqual(machines[0]['id'], self.machine_dept1.id)
+
+        # Check presets endpoint
+        res_presets = self.client.get('/api/ur/schedule-presets/')
+        self.assertEqual(res_presets.status_code, status.HTTP_200_OK)
+        presets = res_presets.json()
+        self.assertEqual(len(presets), 1)
+        self.assertEqual(presets[0]['id'], self.preset_dept1.id)
+
+        # Check breaks endpoint
+        res_breaks = self.client.get('/api/ur/schedule-breaks/')
+        self.assertEqual(res_breaks.status_code, status.HTTP_200_OK)
+        breaks = res_breaks.json()
+        self.assertEqual(len(breaks), 1)
+        self.assertEqual(breaks[0]['id'], self.break_dept1.id)
+
+    def test_machines_in_current_departments_multiple_departments(self):
+        from .models import CurrentDepartment
+        CurrentDepartment.objects.create(user=self.user, department=self.dept1)
+        CurrentDepartment.objects.create(user=self.user, department=self.dept2)
+
+        self.client.force_authenticate(user=self.user)
+        response = self.client.get('/api/ur/machines-to-current-departments/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        machines = response.json()
+        self.assertEqual(len(machines), 2)
+        machine_ids = {m['id'] for m in machines}
+        self.assertIn(self.machine_dept1.id, machine_ids)
+        self.assertIn(self.machine_dept2.id, machine_ids)
+        self.assertNotIn(self.machine_dept3.id, machine_ids)
+
+        # Check presets endpoint filters by the 2 departments
+        res_presets = self.client.get('/api/ur/schedule-presets/')
+        self.assertEqual(res_presets.status_code, status.HTTP_200_OK)
+        presets = res_presets.json()
+        preset_ids = {p['id'] for p in presets}
+        self.assertIn(self.preset_dept1.id, preset_ids)
+        self.assertIn(self.preset_dept2.id, preset_ids)
+        self.assertNotIn(self.preset_dept3.id, preset_ids)
+
+
+

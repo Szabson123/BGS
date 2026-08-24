@@ -16,7 +16,6 @@ router.register(r'schedule-breaks', ScheduleBreakViewSet, basename='schedule-bre
 
 
 urlpatterns = [
-    # Harmonogramy i przerwy maszyn
     path('machines/<int:machine_id>/break-status/', MachineBreakStatusView.as_view(), name='machine-break-status'),
     path('machines/<int:machine_id>/set-schedule/', MachineSetScheduleView.as_view(), name='machine-set-schedule'),
 
@@ -26,6 +25,8 @@ urlpatterns = [
     path('end/breakdown/', BreakdownMakeEndedMove.as_view(), name='end-break-down'),
 
     path('machines-to-current-workshop/', MachinesInCurrentWorkshop.as_view(), name='machines-to-current-workshop'),
+    path('machines-to-current-departments/', MachinesInCurrentDepartments.as_view(), name='machines-to-current-departments'),
+    path('machines-to-current-department/', MachinesInCurrentDepartments.as_view(), name='machines-to-current-department'),
     path('breakdown-to-machine/<int:machine_id>/', BreakdownListToMachine.as_view(), name='breakdown-to-machine'),
 
     path('all-breakdowns-to-report/', BreakdownListViewToReport.as_view(), name='break-downs'),
