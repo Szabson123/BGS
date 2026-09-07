@@ -54,7 +54,7 @@ class MachineViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         workshop_id = self.kwargs.get('workshop_id')
-        return Machine.objects.select_related('workshop', 'department').filter(workshop=workshop_id)
+        return Machine.objects.select_related('workshop', 'department').filter(workshop=workshop_id).order_by('-id')
     
     def perform_create(self, serializer):
         workshop_id = self.kwargs.get('workshop_id')
