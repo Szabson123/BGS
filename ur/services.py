@@ -1,7 +1,107 @@
+from datetime import datetime, timedelta
+from django.utils import timezone
 from django.db import transaction
 
-from .models import Breakdown, BreakdownMove, WorkshopParticipant, AdditionalEndingBreakdownInfo
+from .models import Breakdown, BreakdownMove, WorkshopParticipant, AdditionalEndingBreakdownInfo, Machine, WorkSchedulePreset, ScheduleBreak
 from rest_framework.exceptions import ValidationError
+
+
+def get_machine_break_status(machine: Machine, current_dt: datetime = None):
+    if current_dt is None:
+        current_dt = timezone.localtime()
+    
+    current_time_str = current_dt.strftime("%H:%M:%S")
+    current_date = current_dt.date()
+    
+    preset = machine.schedules.filter(is_active=True).first()
+    if not preset:
+        return {
+            "machine_id": machine.id,
+            "machine_name": machine.name,
+            "server_time": current_time_str,
+            "server_datetime": current_dt.isoformat(),
+            "current_schedule": None,
+            "is_on_break": False,
+            "current_break": None,
+            "next_break": None,
+            "all_breaks_today": [],
+        }
+
+    breaks = list(preset.breaks.all())
+    
+    active_break_data = None
+    upcoming_breaks = []
+    all_breaks_today = []
+
+    # Check yesterday (-1), today (0), tomorrow (+1) for smooth cyclical and crossing midnight calculations
+    for offset_days in [-1, 0, 1]:
+        base_date = current_date + timedelta(days=offset_days)
+        for b in breaks:
+            naive_start = datetime.combine(base_date, b.start_time)
+            if timezone.is_aware(current_dt):
+                start_dt = timezone.make_aware(naive_start, timezone.get_current_timezone())
+            else:
+                start_dt = naive_start
+            
+            end_dt = start_dt + timedelta(minutes=b.duration_minutes)
+
+            # Check if currently active
+            if start_dt <= current_dt < end_dt:
+                remaining_seconds = int((end_dt - current_dt).total_seconds())
+                active_break_data = {
+                    "id": b.id,
+                    "name": b.name,
+                    "start_time": b.start_time.strftime("%H:%M:%S"),
+                    "end_time": end_dt.strftime("%H:%M:%S"),
+                    "duration_minutes": b.duration_minutes,
+                    "remaining_seconds": remaining_seconds,
+                    "remaining_minutes": max(0, (remaining_seconds + 59) // 60),
+                }
+
+            # If starts in future
+            if start_dt > current_dt:
+                starts_in_seconds = int((start_dt - current_dt).total_seconds())
+                upcoming_breaks.append({
+                    "start_dt": start_dt,
+                    "data": {
+                        "id": b.id,
+                        "name": b.name,
+                        "start_time": b.start_time.strftime("%H:%M:%S"),
+                        "end_time": end_dt.strftime("%H:%M:%S"),
+                        "duration_minutes": b.duration_minutes,
+                        "starts_in_seconds": starts_in_seconds,
+                        "starts_in_minutes": max(0, (starts_in_seconds + 59) // 60),
+                    }
+                })
+
+            if offset_days == 0:
+                all_breaks_today.append({
+                    "id": b.id,
+                    "name": b.name,
+                    "start_time": b.start_time.strftime("%H:%M:%S"),
+                    "end_time": end_dt.strftime("%H:%M:%S"),
+                    "duration_minutes": b.duration_minutes,
+                    "order": b.order
+                })
+
+    upcoming_breaks.sort(key=lambda x: x["start_dt"])
+    next_break_data = upcoming_breaks[0]["data"] if upcoming_breaks else None
+
+    return {
+        "machine_id": machine.id,
+        "machine_name": machine.name,
+        "server_time": current_time_str,
+        "server_datetime": current_dt.isoformat(),
+        "current_schedule": {
+            "id": preset.id,
+            "name": preset.name,
+            "shift_duration_hours": preset.shift_duration_hours,
+        },
+        "is_on_break": active_break_data is not None,
+        "current_break": active_break_data,
+        "next_break": next_break_data,
+        "all_breaks_today": all_breaks_today,
+    }
 
 
 def create_breakdown_with_initial_move(user, Breakdown_data):

@@ -97,6 +97,32 @@ class Machine(BaseModel):
 
     def __str__(self):
         return self.name
+
+
+class WorkSchedulePreset(BaseModel):
+    machine = models.ForeignKey(Machine, on_delete=models.CASCADE, null=True, blank=True, related_name='schedules')
+    name = models.CharField(max_length=255)
+    description = models.CharField(max_length=500, null=True, blank=True)
+    shift_duration_hours = models.PositiveIntegerField(default=8)
+    is_active = models.BooleanField(default=False)
+
+    def __str__(self):
+        machine_name = self.machine.name if self.machine else 'Globalny'
+        return f"{machine_name} - {self.name} ({self.shift_duration_hours}h)"
+
+
+class ScheduleBreak(BaseModel):
+    preset = models.ForeignKey(WorkSchedulePreset, on_delete=models.CASCADE, related_name='breaks')
+    name = models.CharField(max_length=255)
+    start_time = models.TimeField()
+    duration_minutes = models.PositiveIntegerField(default=15)
+    order = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ['start_time', 'order']
+
+    def __str__(self):
+        return f"{self.preset.name} - {self.name} ({self.start_time} +{self.duration_minutes}m)"
     
 
 class ClosingBreakdownTypes(BaseModel):

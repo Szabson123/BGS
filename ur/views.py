@@ -14,12 +14,13 @@ from django_filters import rest_framework as filters
 from rest_framework.parsers import MultiPartParser, FormParser
 
 from .models import (Breakdown, AdditionalEndingBreakdownInfo, BreakdownMove, Machine, ClosingBreakdownTypes, ResponsibleForBreakdown, Workshop, Department, WorkshopParticipant,
-                     MachineNotes, CurrentWorkshop, CurrentDepartment)
+                     MachineNotes, CurrentWorkshop, CurrentDepartment, WorkSchedulePreset, ScheduleBreak)
 from .serializers import (BreakdownListSerializer, BreakdownCreateSerializer, BreakdownMovePostSerializer, MachineMainSerializer, EndBreakdownSerializer, WorkshopSerializer,
                           MachineFullListSerializer, ClosingBreakdownTypesSerializer, MachineSerializer, BreakdownListSerializerFullHistory, ResponsibleForBreakdownSerializer,
                           FullBreakdownHistorySerializer, DepartmentSerializer, BreakdownMoveToHistorySerializer, BreakdownOptionsResponseSerializer, BreakdownMoveOptionResponseSerializer,
-                          EndBreakdownOptionsSerializer, WorkshopParticipantSerializer, UserSerializer, MachineNotesSerializer, URProfilePanelSerializer, DepartmentToggleSerializer)
-from .services import create_breakdown_with_initial_move, MoveBreakdownService, EndBreakdownService
+                          EndBreakdownOptionsSerializer, WorkshopParticipantSerializer, UserSerializer, MachineNotesSerializer, URProfilePanelSerializer, DepartmentToggleSerializer,
+                          WorkSchedulePresetSerializer, ScheduleBreakSerializer, MachineSetScheduleSerializer)
+from .services import create_breakdown_with_initial_move, MoveBreakdownService, EndBreakdownService, get_machine_break_status
 from .filters import BreakdownFilter, BreakdownMoveFilter
 from .mixins import WorkshopContextMixin, CurrentWorkshopMixin, CurrentDepartmentsMixin
 from .permissions import IsURAdminOrOwnerOrReadOnlyParticipant
@@ -497,3 +498,108 @@ class BreakdownListViewForDepartments(CurrentDepartmentsMixin, ListAPIView):
                     )
                 )
                 .order_by('-created_at'))
+
+
+class MachinesInCurrentDepartments(CurrentDepartmentsMixin, ListAPIView):
+    serializer_class = MachineMainSerializer
+    permission_classes = [IsAuthenticated]
+    queryset = Machine.objects.all()
+    department_lookup_field = 'department_id__in'
+    
+    def get_queryset(self):
+        qs = super().get_queryset()
+        return qs.select_related('workshop', 'department').prefetch_related('schedules__breaks')
+
+
+class WorkSchedulePresetViewSet(CurrentDepartmentsMixin, viewsets.ModelViewSet):
+    serializer_class = WorkSchedulePresetSerializer
+    queryset = WorkSchedulePreset.objects.prefetch_related('breaks').select_related('machine', 'machine__department').all()
+    permission_classes = [IsAuthenticated]
+    filter_backends = [filters.DjangoFilterBackend]
+    filterset_fields = ['machine', 'is_active']
+    department_lookup_field = 'machine__department_id__in'
+
+    def get_queryset(self):
+        dept_ids = self.get_user_department_ids()
+        qs = super(CurrentDepartmentsMixin, self).get_queryset()
+        if not dept_ids:
+            return qs.none()
+        return qs.filter(Q(machine__department_id__in=dept_ids) | Q(machine__isnull=True))
+
+    def perform_create(self, serializer):
+        machine_id = self.request.data.get('machine')
+        if machine_id:
+            user = self.request.user
+            dept_ids = list(user.currentdepartments.values_list('department_id', flat=True))
+            if dept_ids:
+                machine = get_object_or_404(Machine, pk=machine_id, department_id__in=dept_ids)
+            else:
+                machine = get_object_or_404(Machine, pk=machine_id)
+            serializer.save(machine=machine)
+        else:
+            serializer.save()
+
+    @action(detail=True, methods=['post'])
+    def activate(self, request, pk=None):
+        preset = self.get_object()
+        with transaction.atomic():
+            WorkSchedulePreset.objects.filter(machine=preset.machine).update(is_active=False)
+            preset.is_active = True
+            preset.save()
+        return Response(self.get_serializer(preset).data, status=status.HTTP_200_OK)
+
+
+class ScheduleBreakViewSet(CurrentDepartmentsMixin, viewsets.ModelViewSet):
+    serializer_class = ScheduleBreakSerializer
+    queryset = ScheduleBreak.objects.select_related('preset__machine').all()
+    permission_classes = [IsAuthenticated]
+    filter_backends = [filters.DjangoFilterBackend]
+    filterset_fields = ['preset']
+    department_lookup_field = 'preset__machine__department_id__in'
+
+    def get_queryset(self):
+        dept_ids = self.get_user_department_ids()
+        qs = super(CurrentDepartmentsMixin, self).get_queryset()
+        if not dept_ids:
+            return qs.none()
+        return qs.filter(Q(preset__machine__department_id__in=dept_ids) | Q(preset__machine__isnull=True))
+
+
+class MachineBreakStatusView(GenericAPIView):
+    permission_classes = []
+
+    def get(self, request, machine_id):
+        machine = get_object_or_404(
+            Machine.objects.prefetch_related('schedules__breaks'),
+            pk=machine_id
+        )
+        status_data = get_machine_break_status(machine)
+        return Response(status_data, status=status.HTTP_200_OK)
+
+
+class MachineSetScheduleView(GenericAPIView):
+    serializer_class = MachineSetScheduleSerializer
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, machine_id):
+        machine = get_object_or_404(Machine, pk=machine_id)
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        preset_id = serializer.validated_data.get('schedule_preset_id')
+        with transaction.atomic():
+            WorkSchedulePreset.objects.filter(machine=machine).update(is_active=False)
+            active_name = None
+            if preset_id is not None:
+                preset = get_object_or_404(WorkSchedulePreset, pk=preset_id, machine=machine)
+                preset.is_active = True
+                preset.save()
+                active_name = preset.name
+
+        return Response({
+            "message": "Tryb pracy maszyny został zaktualizowany.",
+            "machine_id": machine.id,
+            "machine_name": machine.name,
+            "active_schedule_id": preset_id,
+            "active_schedule_name": active_name
+        }, status=status.HTTP_200_OK)

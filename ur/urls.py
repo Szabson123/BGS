@@ -11,15 +11,22 @@ router.register(r'closing-breakdown-types/(?P<workshop_id>\d+)', ClosingBreakdow
 router.register(r'responsible-for-breakdown/(?P<workshop_id>\d+)', ResponsibleForBreakdownViewset, basename='responsible-for-breakdown')
 router.register(r'participants/(?P<workshop_id>\d+)', WorkshopParticipantViewset, basename='participants')
 router.register(r'notes/(?P<machine_id>\d+)', MachineNotesViewSet, basename='notes')
+router.register(r'schedule-presets', WorkSchedulePresetViewSet, basename='schedule-presets')
+router.register(r'schedule-breaks', ScheduleBreakViewSet, basename='schedule-breaks')
 
 
 urlpatterns = [
+    path('machines/<int:machine_id>/break-status/', MachineBreakStatusView.as_view(), name='machine-break-status'),
+    path('machines/<int:machine_id>/set-schedule/', MachineSetScheduleView.as_view(), name='machine-set-schedule'),
+
     path('', include(router.urls)),
     path('create/breakdown/', BreakdownCreateView.as_view(), name='craete-break-down'),
     path('move/breakdown/', BreakdownMakeMove.as_view(), name='move-break-down'),
     path('end/breakdown/', BreakdownMakeEndedMove.as_view(), name='end-break-down'),
 
     path('machines-to-current-workshop/', MachinesInCurrentWorkshop.as_view(), name='machines-to-current-workshop'),
+    path('machines-to-current-departments/', MachinesInCurrentDepartments.as_view(), name='machines-to-current-departments'),
+    path('machines-to-current-department/', MachinesInCurrentDepartments.as_view(), name='machines-to-current-department'),
     path('breakdown-to-machine/<int:machine_id>/', BreakdownListToMachine.as_view(), name='breakdown-to-machine'),
 
     path('all-breakdowns-to-report/', BreakdownListViewToReport.as_view(), name='break-downs'),
