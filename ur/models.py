@@ -89,7 +89,7 @@ class Machine(BaseModel):
     workshop = models.ForeignKey(Workshop, on_delete=models.CASCADE, null=True, blank=True, related_name='machines')
     name = models.CharField(max_length=255)
     alias = models.CharField(max_length=255, null=True, blank=True)
-    phase_id = models.CharField(max_length=24, null=True, blank=True)
+    phase_id = models.CharField(max_length=255, null=True, blank=True)
     sigip_num = models.CharField(max_length=255, null=True, blank=True)
 
 
