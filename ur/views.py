@@ -13,12 +13,13 @@ from rest_framework.pagination import PageNumberPagination
 from django_filters import rest_framework as filters
 from rest_framework.parsers import MultiPartParser, FormParser
 
+from django.contrib.auth.models import Group
 from .models import (Breakdown, AdditionalEndingBreakdownInfo, BreakdownMove, Machine, ClosingBreakdownTypes, ResponsibleForBreakdown, Workshop, Department, WorkshopParticipant,
-                     MachineNotes, CurrentWorkshop, CurrentDepartment, WorkSchedulePreset, ScheduleBreak)
+                     MachineNotes, MachineNoteFile, CurrentWorkshop, CurrentDepartment, WorkSchedulePreset, ScheduleBreak)
 from .serializers import (BreakdownListSerializer, BreakdownCreateSerializer, BreakdownMovePostSerializer, MachineMainSerializer, EndBreakdownSerializer, WorkshopSerializer,
                           MachineFullListSerializer, ClosingBreakdownTypesSerializer, MachineSerializer, BreakdownListSerializerFullHistory, ResponsibleForBreakdownSerializer,
                           FullBreakdownHistorySerializer, DepartmentSerializer, BreakdownMoveToHistorySerializer, BreakdownOptionsResponseSerializer, BreakdownMoveOptionResponseSerializer,
-                          EndBreakdownOptionsSerializer, WorkshopParticipantSerializer, UserSerializer, MachineNotesSerializer, URProfilePanelSerializer, DepartmentToggleSerializer,
+                          EndBreakdownOptionsSerializer, WorkshopParticipantSerializer, DepartmentParticipantSerializer, UserSerializer, MachineNotesSerializer, URProfilePanelSerializer, DepartmentToggleSerializer,
                           WorkSchedulePresetSerializer, ScheduleBreakSerializer, MachineSetScheduleSerializer)
 from .services import create_breakdown_with_initial_move, MoveBreakdownService, EndBreakdownService, get_machine_break_status
 from .filters import BreakdownFilter, BreakdownMoveFilter
@@ -64,8 +65,10 @@ class MachineViewSet(viewsets.ModelViewSet):
 
 
 class BreakdownListToMachine(ListAPIView):
-    serializer_class =  FullBreakdownHistorySerializer
+    serializer_class = FullBreakdownHistorySerializer
     pagination_class = CustomPagination
+    filter_backends = [filters.DjangoFilterBackend]
+    filterset_class = BreakdownFilter
     
     def get_queryset(self):
         machine_id = self.kwargs.get('machine_id')
@@ -168,6 +171,30 @@ class BreakdownMakeEndedMove(GenericAPIView):
         service.execute()
 
         return Response({"detail": "success"}, status=status.HTTP_201_CREATED)
+
+
+class BreakdownUpdateNotesView(GenericAPIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, breakdown_id=None):
+        pk = breakdown_id or request.data.get('breakdown') or request.data.get('breakdown_id')
+        breakdown = get_object_or_404(Breakdown, pk=pk)
+        description = request.data.get('description', '')
+
+        latest_move = BreakdownMove.objects.filter(breakdown=breakdown).order_by('-created_at').first()
+        if latest_move:
+            latest_move.description = description
+            latest_move.user = request.user
+            latest_move.save()
+        else:
+            BreakdownMove.objects.create(
+                breakdown=breakdown,
+                status=BreakdownMove.Status.REPORTED,
+                user=request.user,
+                description=description
+            )
+
+        return Response({"detail": "success", "description": description}, status=status.HTTP_200_OK)
 
 
 class BreakdownListViewToReport(CurrentWorkshopMixin, ListAPIView):
@@ -346,7 +373,54 @@ class WorkshopParticipantViewset(viewsets.ModelViewSet):
 
         serializer = self.get_serializer(qs, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
-    
+
+
+class DepartmentParticipantViewset(viewsets.ModelViewSet):
+    serializer_class = DepartmentParticipantSerializer
+    queryset = CurrentDepartment.objects.all()
+
+    def get_queryset(self):
+        department_id = self.kwargs.get('department_id')
+        qs = CurrentDepartment.objects.select_related('user', 'department').filter(department_id=department_id)
+        return qs
+
+    def perform_create(self, serializer):
+        department_id = self.kwargs.get('department_id')
+        department = get_object_or_404(Department, pk=department_id)
+        user = serializer.validated_data.get('user')
+        if user:
+            prod_group, _ = Group.objects.get_or_create(name='ur_production')
+            user.groups.add(prod_group)
+        serializer.save(department=department)
+
+    @action(detail=False, methods=['get'], serializer_class=UserSerializer)
+    def get_available_users_to_add(self, request, *args, **kwargs):
+        department_id = self.kwargs.get('department_id')
+
+        qs = CustomUser.objects.exclude(currentdepartments__department_id=department_id)
+
+        serializer = self.get_serializer(qs, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class ProductionWorkerViewSet(viewsets.ModelViewSet):
+    serializer_class = UserSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return (
+            CustomUser.objects.filter(groups__name='ur_production')
+            .exclude(groups__name__in=['ur_admin', 'ur_owner', 'ur_production_supervisor', 'ur_supervisor', 'ur_worker', 'ur_cordinator'])
+            .exclude(is_superuser=True)
+            .distinct()
+            .order_by('-id')
+        )
+
+    def destroy(self, request, *args, **kwargs):
+        user = self.get_object()
+        user.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
 
 class MachineNotesViewSet(viewsets.ModelViewSet):
     serializer_class = MachineNotesSerializer
@@ -357,10 +431,28 @@ class MachineNotesViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         machine_id = self.kwargs.get('machine_id')
         machine = get_object_or_404(Machine, pk=machine_id)
-        serializer.save(created_by=self.request.user, machine=machine)
+        note = serializer.save(created_by=self.request.user, machine=machine)
+
+        # Obsługa wielu załączników przesłanych pod 'files' lub 'file'
+        uploaded_files = self.request.FILES.getlist('files') or self.request.FILES.getlist('files[]')
+        # Jeśli ktoś przesłał też pojedynczy plik 'file' i nie ma go w 'files'
+        single_file = self.request.FILES.get('file')
+        if single_file and single_file not in uploaded_files:
+            uploaded_files.append(single_file)
+
+        for f in uploaded_files:
+            MachineNoteFile.objects.create(
+                note=note,
+                file=f,
+                file_name=f.name
+            )
 
     def get_queryset(self):
-        return MachineNotes.objects.select_related('created_by').filter(machine_id=self.kwargs.get('machine_id')).order_by('-created_at')
+        return (MachineNotes.objects
+                .select_related('created_by')
+                .prefetch_related('files')
+                .filter(machine_id=self.kwargs.get('machine_id'))
+                .order_by('-created_at'))
 
 
 class URProfilePanel(GenericAPIView):
@@ -483,6 +575,7 @@ class BreakdownListViewForDepartments(CurrentDepartmentsMixin, ListAPIView):
         qs = super().get_queryset()
 
         return (qs
+                .exclude(history__status=BreakdownMove.Status.ENDED)
                 .select_related('machine', 'reporter')
                 .prefetch_related(
                     Prefetch(

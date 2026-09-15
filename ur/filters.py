@@ -30,10 +30,17 @@ class BreakdownFilter(filters.FilterSet):
         fields = ['priority', 'reporter', 'machine', 'close_type', 'responsible']
 
     def filter_by_all_descriptions(self, queryset, name, value):
-        return queryset.filter(
+        q = (
             models.Q(description__icontains=value) | 
-            models.Q(history__description__icontains=value)
-        ).distinct()
+            models.Q(history__description__icontains=value) |
+            models.Q(reporter__first_name__icontains=value) |
+            models.Q(reporter__last_name__icontains=value) |
+            models.Q(reporter__username__icontains=value)
+        )
+        clean_val = value.lstrip('#').strip()
+        if clean_val.isdigit():
+            q |= models.Q(pk=int(clean_val))
+        return queryset.filter(q).distinct()
     
     def filter_by_last_status(self, queryset, name, value):
         latest_status_subquery = BreakdownMove.objects.filter(

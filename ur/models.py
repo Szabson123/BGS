@@ -142,6 +142,15 @@ class MachineNotes(BaseModel):
     created_by = models.ForeignKey(CustomUser, on_delete=models.CASCADE)
 
 
+class MachineNoteFile(BaseModel):
+    note = models.ForeignKey(MachineNotes, on_delete=models.CASCADE, related_name='files')
+    file = models.FileField(upload_to='machine/notes')
+    file_name = models.CharField(max_length=255, null=True, blank=True)
+
+    def __str__(self):
+        return f"{self.note_id} - {self.file_name or self.file.name}"
+
+
 class Breakdown(BaseModel):
     class Priority(models.TextChoices):
         NONE = 'NONE', 'Brak'

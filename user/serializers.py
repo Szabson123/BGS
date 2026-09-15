@@ -5,7 +5,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from rest_framework import serializers
 
-from ur.models import Workshop, CurrentWorkshop, WorkshopParticipant
+from ur.models import Workshop, CurrentWorkshop, WorkshopParticipant, Department, CurrentDepartment
 
 User = get_user_model()
 
@@ -83,6 +83,80 @@ class CreateUserByAdminSerializer(serializers.ModelSerializer):
                 user=user,
                 workshop=workshop
             )
+
+        return user
+
+
+class CreateProductionUserSerializer(serializers.ModelSerializer):
+    first_name = serializers.CharField(write_only=True, required=True)
+    last_name = serializers.CharField(write_only=True, required=True)
+    
+    department_id = serializers.PrimaryKeyRelatedField(
+        queryset=Department.objects.all(),
+        source='department',
+        write_only=True,
+        required=False,
+        allow_null=True
+    )
+    
+    generated_username = serializers.CharField(read_only=True, source='username')
+
+    class Meta:
+        model = User
+        fields = [
+            'first_name', 
+            'last_name', 
+            'department_id',
+            'card_code', 
+            'number', 
+            'main_page', 
+            'generated_username',
+        ]
+
+    def _generate_unique_username(self, first_name: str, last_name: str) -> str:
+        fn = first_name.strip().lower()
+        ln = last_name.strip().lower()
+
+        base_first = fn[:2] if len(fn) >= 2 else fn
+        base_last = ln[-3:] if len(ln) >= 3 else ln
+        
+        base_username = f"{base_first}{base_last}"
+        username = base_username
+        counter = 2
+
+        while User.objects.filter(username=username).exists():
+            username = f"{base_username}{counter}"
+            counter += 1
+
+        return username
+
+    def create(self, validated_data):
+        first_name = validated_data.pop('first_name')
+        last_name = validated_data.pop('last_name')
+        department = validated_data.pop('department', None)
+
+        username = self._generate_unique_username(first_name, last_name)
+        dummy_password = ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(16))
+
+        with transaction.atomic():
+            user = User.objects.create_user(
+                username=username,
+                password=dummy_password,
+                first_name=first_name,
+                last_name=last_name,
+                is_active=False,
+                is_in_change_password=True,
+                **validated_data
+            )
+
+            prod_group, _ = Group.objects.get_or_create(name='ur_production')
+            user.groups.add(prod_group)
+
+            if department:
+                CurrentDepartment.objects.create(
+                    user=user,
+                    department=department
+                )
 
         return user
 

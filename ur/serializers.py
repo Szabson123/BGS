@@ -1,9 +1,9 @@
 from rest_framework import serializers
 from rest_framework.validators import UniqueTogetherValidator
 
-from .models import (Workshop, CurrentWorkshop, Machine, Breakdown, BreakdownMove, MachineNotes, 
+from .models import (Workshop, CurrentWorkshop, Machine, Breakdown, BreakdownMove, MachineNotes, MachineNoteFile,
                      AdditionalEndingBreakdownInfo, ResponsibleForBreakdown, ClosingBreakdownTypes, 
-                     Department, WorkshopParticipant, WorkSchedulePreset, ScheduleBreak)
+                     Department, WorkshopParticipant, WorkSchedulePreset, ScheduleBreak, CurrentDepartment)
 from user.models import CustomUser
 
 
@@ -91,11 +91,41 @@ class MachineSerializer(serializers.ModelSerializer):
         return active.id if active else None
 
 
+class MachineNoteFileSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = MachineNoteFile
+        fields = ['id', 'file', 'file_name', 'created_at']
+
+
 class MachineNotesSerializer(serializers.ModelSerializer):
     created_by = UserSerializer(read_only=True)
+    files = serializers.SerializerMethodField()
+
     class Meta:
         model = MachineNotes
-        fields = ['id', 'description', 'file', 'created_by', 'created_at']
+        fields = ['id', 'description', 'file', 'files', 'created_by', 'created_at']
+
+    def get_files(self, obj):
+        request = self.context.get('request')
+        result = []
+        # Stary plik dla kompatybilności wstecznej jeśli istnieje
+        if obj.file:
+            file_url = request.build_absolute_uri(obj.file.url) if request else obj.file.url
+            result.append({
+                'id': f'legacy_{obj.id}',
+                'file': file_url,
+                'file_name': obj.file.name.split('/')[-1]
+            })
+
+        for note_file in obj.files.all():
+            if note_file.file:
+                file_url = request.build_absolute_uri(note_file.file.url) if request else note_file.file.url
+                result.append({
+                    'id': note_file.id,
+                    'file': file_url,
+                    'file_name': note_file.file_name or note_file.file.name.split('/')[-1]
+                })
+        return result
 
 
 class MachineMainSerializer(serializers.ModelSerializer):
@@ -256,6 +286,27 @@ class WorkshopParticipantSerializer(serializers.ModelSerializer):
         if WorkshopParticipant.objects.filter(workshop_id=workshop_id, user=user).exists():
             raise serializers.ValidationError(
                 {"user": "Ten użytkownik już należy do warsztatu"}
+            )
+        
+        return data
+
+
+class DepartmentParticipantSerializer(serializers.ModelSerializer):
+    user = serializers.PrimaryKeyRelatedField(queryset=CustomUser.objects.all(), write_only=True)
+    user_full_name = UserSerializer(read_only=True, source='user')
+
+    class Meta:
+        model = CurrentDepartment
+        fields = ['id', 'user', 'user_full_name', 'department']
+        extra_kwargs = {'department': {'read_only': True}}
+
+    def validate(self, data):
+        department_id = self.context['view'].kwargs.get('department_id')
+        user = data.get('user')
+
+        if CurrentDepartment.objects.filter(department_id=department_id, user=user).exists():
+            raise serializers.ValidationError(
+                {"user": "Ten użytkownik jest już przypisany do tego działu"}
             )
         
         return data

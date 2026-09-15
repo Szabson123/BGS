@@ -10,6 +10,8 @@ router.register(r'department', DepartmentViewSet, basename='department')
 router.register(r'closing-breakdown-types/(?P<workshop_id>\d+)', ClosingBreakdownTypesViewset, basename='closing-breakdown-types')
 router.register(r'responsible-for-breakdown/(?P<workshop_id>\d+)', ResponsibleForBreakdownViewset, basename='responsible-for-breakdown')
 router.register(r'participants/(?P<workshop_id>\d+)', WorkshopParticipantViewset, basename='participants')
+router.register(r'department-participants/(?P<department_id>\d+)', DepartmentParticipantViewset, basename='department-participants')
+router.register(r'production-workers', ProductionWorkerViewSet, basename='production-workers')
 router.register(r'notes/(?P<machine_id>\d+)', MachineNotesViewSet, basename='notes')
 router.register(r'schedule-presets', WorkSchedulePresetViewSet, basename='schedule-presets')
 router.register(r'schedule-breaks', ScheduleBreakViewSet, basename='schedule-breaks')
@@ -23,6 +25,8 @@ urlpatterns = [
     path('create/breakdown/', BreakdownCreateView.as_view(), name='craete-break-down'),
     path('move/breakdown/', BreakdownMakeMove.as_view(), name='move-break-down'),
     path('end/breakdown/', BreakdownMakeEndedMove.as_view(), name='end-break-down'),
+    path('breakdowns/<int:breakdown_id>/update-notes/', BreakdownUpdateNotesView.as_view(), name='breakdown-update-notes'),
+    path('update-notes/breakdown/', BreakdownUpdateNotesView.as_view(), name='breakdown-update-notes-body'),
 
     path('machines-to-current-workshop/', MachinesInCurrentWorkshop.as_view(), name='machines-to-current-workshop'),
     path('machines-to-current-departments/', MachinesInCurrentDepartments.as_view(), name='machines-to-current-departments'),
