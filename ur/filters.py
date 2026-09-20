@@ -23,7 +23,7 @@ class BreakdownFilter(filters.FilterSet):
 
     search = filters.CharFilter(method='filter_by_all_descriptions', label='Szukaj w opisach')
     close_type = filters.NumberFilter(field_name='additional__closing_breakdown_type__id')
-    responsible = filters.NumberFilter(field_name='additional__responsible_for_Breakdown__id')
+    responsible = filters.NumberFilter(field_name='additional__responsible_for_breakdown__id')
 
     class Meta:
         model = Breakdown

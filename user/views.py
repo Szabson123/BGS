@@ -1,6 +1,8 @@
 from django.contrib.auth import authenticate, login, logout
 from django.middleware.csrf import get_token
 from django.db.models import prefetch_related_objects
+from django.views.decorators.cache import never_cache
+from django.utils.decorators import method_decorator
 
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -8,7 +10,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 
-from .permissions import IsURAdminOrOwner
+from .permissions import IsURAdminOrOwner, IsProductionSupervisorOrAdmin
 from .serializers import (
     CreateUserByAdminSerializer,
     CreateProductionUserSerializer,
@@ -53,6 +55,7 @@ class LoginAPIView(APIView):
             "last_name": user.last_name,
             "main_page": user.main_page,
             "groups": groups_list,
+            "is_superuser": user.is_superuser,
         })
 
 
@@ -64,17 +67,19 @@ class LogoutAPIView(APIView):
         return Response({"detail": "Wylogowano"})
 
 
+@method_decorator(never_cache, name='dispatch')
 class MeAPIView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         user = request.user
+        user.refresh_from_db()
 
         prefetch_related_objects([user], 'groups')
 
         groups_list = list(user.groups.values_list('name', flat=True))
 
-        return Response({
+        response = Response({
             "id": user.id,
             "username": user.username,
             "email": user.email,
@@ -84,6 +89,10 @@ class MeAPIView(APIView):
             "groups": groups_list,
             "is_superuser": user.is_superuser,
         })
+        response["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0"
+        response["Pragma"] = "no-cache"
+        response["Expires"] = "0"
+        return response
 
 
 class CsrfAPIView(APIView):
@@ -109,7 +118,7 @@ class AdminCreateUserView(APIView):
 
 
 class CreateProductionUserView(APIView):
-    permission_classes = [IsURAdminOrOwner]
+    permission_classes = [IsProductionSupervisorOrAdmin]
     authentication_classes = [BasicAuthentication, SessionAuthentication]
 
     def post(self, request):

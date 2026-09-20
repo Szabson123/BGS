@@ -27,6 +27,7 @@ from .mixins import WorkshopContextMixin, CurrentWorkshopMixin, CurrentDepartmen
 from .permissions import IsURAdminOrOwnerOrReadOnlyParticipant
 
 from user.models import CustomUser
+from user.permissions import IsProductionSupervisorOrAdmin
 
 
 class CustomPagination(PageNumberPagination):
@@ -405,7 +406,7 @@ class DepartmentParticipantViewset(viewsets.ModelViewSet):
 
 class ProductionWorkerViewSet(viewsets.ModelViewSet):
     serializer_class = UserSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsProductionSupervisorOrAdmin]
 
     def get_queryset(self):
         return (
@@ -453,6 +454,26 @@ class MachineNotesViewSet(viewsets.ModelViewSet):
                 .prefetch_related('files')
                 .filter(machine_id=self.kwargs.get('machine_id'))
                 .order_by('-created_at'))
+
+    def destroy(self, request, *args, **kwargs):
+        note = self.get_object()
+        user = request.user
+        is_admin = user.is_superuser or user.groups.filter(name__in=['ur_admin', 'ur_owner']).exists()
+
+        if note.created_by != user and not is_admin:
+            return Response(
+                {"detail": "Tylko autor notatki lub administrator może ją usunąć."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        for note_file in note.files.all():
+            if note_file.file:
+                note_file.file.delete(save=False)
+        if note.file:
+            note.file.delete(save=False)
+
+        note.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class URProfilePanel(GenericAPIView):
