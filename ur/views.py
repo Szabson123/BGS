@@ -34,6 +34,12 @@ class CustomPagination(PageNumberPagination):
     page_size = 20
     max_page_size = 60
 
+    def paginate_queryset(self, queryset, request, view=None):
+        no_pagination = request.query_params.get('no_pagination', '')
+        if str(no_pagination).lower() in ['true', '1', 'yes']:
+            return None
+        return super().paginate_queryset(queryset, request, view=view)
+
 
 class DepartmentViewSet(viewsets.ModelViewSet):
     serializer_class = DepartmentSerializer
@@ -48,7 +54,16 @@ class MachinesInCurrentWorkshop(CurrentWorkshopMixin, ListAPIView):
     
     def get_queryset(self):
         qs = super().get_queryset()
-        return qs.select_related('workshop', 'department')
+        search_query = self.request.query_params.get('search') or self.request.query_params.get('q')
+        if search_query:
+            search_query = search_query.strip()
+            qs = qs.filter(
+                Q(name__icontains=search_query) |
+                Q(alias__icontains=search_query) |
+                Q(phase_id__icontains=search_query) |
+                Q(sigip_num__icontains=search_query)
+            )
+        return qs.select_related('workshop', 'department').order_by('name')
     
 
 class MachineViewSet(viewsets.ModelViewSet):
@@ -205,6 +220,12 @@ class BreakdownListViewToReport(CurrentWorkshopMixin, ListAPIView):
     filter_backends = [filters.DjangoFilterBackend]
     filterset_class = BreakdownFilter
     workshop_lookup_field = 'machine__workshop'
+
+    def paginate_queryset(self, queryset):
+        no_pagination = self.request.query_params.get('no_pagination', '')
+        if str(no_pagination).lower() in ['true', '1', 'yes']:
+            return None
+        return super().paginate_queryset(queryset)
 
     def get_queryset(self):
         qs = super().get_queryset()
@@ -622,7 +643,16 @@ class MachinesInCurrentDepartments(CurrentDepartmentsMixin, ListAPIView):
     
     def get_queryset(self):
         qs = super().get_queryset()
-        return qs.select_related('workshop', 'department').prefetch_related('schedules__breaks')
+        search_query = self.request.query_params.get('search') or self.request.query_params.get('q')
+        if search_query:
+            search_query = search_query.strip()
+            qs = qs.filter(
+                Q(name__icontains=search_query) |
+                Q(alias__icontains=search_query) |
+                Q(phase_id__icontains=search_query) |
+                Q(sigip_num__icontains=search_query)
+            )
+        return qs.select_related('workshop', 'department').prefetch_related('schedules__breaks').order_by('name')
 
 
 class WorkSchedulePresetViewSet(CurrentDepartmentsMixin, viewsets.ModelViewSet):
