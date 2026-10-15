@@ -84,14 +84,18 @@ class CurrentDepartment(BaseModel):
         return f"{self.user.username} -> {self.department.name}"
 
 
+class MachineLineName(BaseModel):
+    name = models.CharField(max_length=255)
+
+
 class Machine(BaseModel):
     department = models.ForeignKey(Department, on_delete=models.SET_NULL, null=True, blank=True, related_name='machines')
     workshop = models.ForeignKey(Workshop, on_delete=models.CASCADE, null=True, blank=True, related_name='machines')
+    line = models.ForeignKey(MachineLineName, on_delete=models.SET_NULL, null=True, blank=True, related_name='lines')
     name = models.CharField(max_length=255)
     alias = models.CharField(max_length=255, null=True, blank=True)
     phase_id = models.CharField(max_length=255, null=True, blank=True)
     sigip_num = models.CharField(max_length=255, null=True, blank=True)
-
 
     objects = MachineQuerySet.as_manager()
 
@@ -226,3 +230,4 @@ class WorkshopInspectionsPresetField(BaseModel):
     preset = models.ForeignKey(WorkshopInspectionsPreset, on_delete=models.CASCADE)
     text = models.CharField(max_length=255)
     type = models.CharField(choices=AvaibleTypes, max_length=5)
+

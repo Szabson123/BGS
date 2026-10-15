@@ -3,9 +3,9 @@ from rest_framework.validators import UniqueTogetherValidator
 
 from .models import (Workshop, CurrentWorkshop, Machine, Breakdown, BreakdownMove, MachineNotes, MachineNoteFile,
                      AdditionalEndingBreakdownInfo, ResponsibleForBreakdown, ClosingBreakdownTypes, 
-                     Department, WorkshopParticipant, WorkSchedulePreset, ScheduleBreak, CurrentDepartment)
+                     Department, WorkshopParticipant, WorkSchedulePreset, ScheduleBreak, CurrentDepartment, MachineLineName)
 from user.models import CustomUser
-
+from django.db import transaction
 
 class LookupOptionSerializer(serializers.Serializer):
     id = serializers.IntegerField()
@@ -56,6 +56,11 @@ class AdditionalEndingBreakdownInfoSerializer(serializers.ModelSerializer):
         fields = ['closing_breakdown_type_name', 'responsible_for_breakdown']
 
 
+class MachineLineNameSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = MachineLineName
+        fields = ['id', 'name']
+
 class ClosingBreakdownTypesSerializer(serializers.ModelSerializer):
     class Meta:
         model = ClosingBreakdownTypes
@@ -75,21 +80,21 @@ class WorkshopSerializer(serializers.ModelSerializer):
 
 
 class MachineSerializer(serializers.ModelSerializer):
+    line = MachineLineNameSerializer(read_only=True)
     active_schedule_name = serializers.SerializerMethodField()
     active_schedule_id = serializers.SerializerMethodField()
 
     class Meta:
         model = Machine
-        fields = ['id', 'name', 'alias', 'sigip_num', 'active_schedule_id', 'active_schedule_name']
+        fields = ['id', 'name', 'alias', 'sigip_num', 'line', 'active_schedule_id', 'active_schedule_name']
 
     def get_active_schedule_name(self, obj):
-        active = obj.schedules.filter(is_active=True).first()
+        active = next((s for s in obj.schedules.all() if s.is_active), None)
         return active.name if active else None
 
     def get_active_schedule_id(self, obj):
-        active = obj.schedules.filter(is_active=True).first()
+        active = next((s for s in obj.schedules.all() if s.is_active), None)
         return active.id if active else None
-
 
 class MachineNoteFileSerializer(serializers.ModelSerializer):
     class Meta:
@@ -136,18 +141,57 @@ class MachineMainSerializer(serializers.ModelSerializer):
     active_schedule_id = serializers.SerializerMethodField()
     schedules = WorkSchedulePresetSerializer(many=True, read_only=True)
 
+    # Linia
+    line = MachineLineNameSerializer(read_only=True)
+    line_id = serializers.PrimaryKeyRelatedField(
+        queryset=MachineLineName.objects.all(),
+        source='line', write_only=True, required=False, allow_null=True
+    )
+    line_name = serializers.CharField(
+        write_only=True, required=False, allow_blank=True, allow_null=True
+    )
+
     class Meta:
         model = Machine
-        fields = ['id', 'name', 'alias', 'phase_id', 'sigip_num', 'department_name', 'department', 'workshop_name', 'active_schedule_id', 'active_schedule_name', 'schedules']
+        fields = ['id', 'name', 'alias', 'phase_id', 'sigip_num', 'department_name', 'department',
+                  'workshop_name', 'line', 'line_id', 'line_name',
+                  'active_schedule_id', 'active_schedule_name', 'schedules']
+
+    def _resolve_line(self, validated_data):
+        """line_name ma pierwszeństwo: istniejąca linia jest podpinana, nowa tworzona."""
+        if 'line_name' not in validated_data:
+            return
+        name = (validated_data.pop('line_name') or '').strip()
+        if not name:
+            # Pusty line_name odpina linię tylko wtedy, gdy nie podano line_id
+            validated_data.setdefault('line', None)
+            return
+        line = MachineLineName.objects.filter(name__iexact=name).first()
+        if line is None:
+            line = MachineLineName.objects.create(name=name)
+        validated_data['line'] = line
+
+    def create(self, validated_data):
+        with transaction.atomic():
+            self._resolve_line(validated_data)
+            return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        with transaction.atomic():
+            self._resolve_line(validated_data)
+            return super().update(instance, validated_data)
 
     def get_active_schedule_name(self, obj):
-        active = obj.schedules.filter(is_active=True).first()
+        active = self._get_active_schedule(obj)
         return active.name if active else None
 
     def get_active_schedule_id(self, obj):
-        active = obj.schedules.filter(is_active=True).first()
+        active = self._get_active_schedule(obj)
         return active.id if active else None
 
+    def _get_active_schedule(self, obj):
+        # Iteracja po .all() korzysta z prefetch_related; .filter() robiłby nowe zapytanie dla każdej maszyny
+        return next((s for s in obj.schedules.all() if s.is_active), None)
 
 class BreakdownMoveSerializer(serializers.ModelSerializer):
     user = UserSerializer(read_only=True)
@@ -235,15 +279,14 @@ class BreakdownMoveToHistorySerializer(serializers.ModelSerializer):
         model = BreakdownMove
         fields = ['id', 'user', 'status', 'description', 'created_at', 'machine', 'breakdown']
 
-
 class BreakdownOptionsResponseSerializer(serializers.Serializer):
     priorities = ChoicesOptionSerializer(many=True)
     statuses = ChoicesOptionSerializer(many=True)
 
     machines = LookupOptionSerializer(many=True)
+    lines = LookupOptionSerializer(many=True)
     close_types = LookupOptionSerializer(many=True)
     responsibles = LookupOptionSerializer(many=True)
-
 
 class BreakdownMoveOptionResponseSerializer(serializers.Serializer):
     departments = LookupOptionSerializer(many=True)

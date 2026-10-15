@@ -15,6 +15,7 @@ router.register(r'production-workers', ProductionWorkerViewSet, basename='produc
 router.register(r'notes/(?P<machine_id>\d+)', MachineNotesViewSet, basename='notes')
 router.register(r'schedule-presets', WorkSchedulePresetViewSet, basename='schedule-presets')
 router.register(r'schedule-breaks', ScheduleBreakViewSet, basename='schedule-breaks')
+router.register(r'machine-lines', MachineLineNameViewSet, basename='machine-lines')
 
 
 urlpatterns = [

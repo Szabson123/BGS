@@ -15,12 +15,12 @@ from rest_framework.parsers import MultiPartParser, FormParser
 
 from django.contrib.auth.models import Group
 from .models import (Breakdown, AdditionalEndingBreakdownInfo, BreakdownMove, Machine, ClosingBreakdownTypes, ResponsibleForBreakdown, Workshop, Department, WorkshopParticipant,
-                     MachineNotes, MachineNoteFile, CurrentWorkshop, CurrentDepartment, WorkSchedulePreset, ScheduleBreak)
+                     MachineNotes, MachineNoteFile, CurrentWorkshop, CurrentDepartment, WorkSchedulePreset, ScheduleBreak, MachineLineName)
 from .serializers import (BreakdownListSerializer, BreakdownCreateSerializer, BreakdownMovePostSerializer, MachineMainSerializer, EndBreakdownSerializer, WorkshopSerializer,
                           MachineFullListSerializer, ClosingBreakdownTypesSerializer, MachineSerializer, BreakdownListSerializerFullHistory, ResponsibleForBreakdownSerializer,
                           FullBreakdownHistorySerializer, DepartmentSerializer, BreakdownMoveToHistorySerializer, BreakdownOptionsResponseSerializer, BreakdownMoveOptionResponseSerializer,
                           EndBreakdownOptionsSerializer, WorkshopParticipantSerializer, DepartmentParticipantSerializer, UserSerializer, MachineNotesSerializer, URProfilePanelSerializer, DepartmentToggleSerializer,
-                          WorkSchedulePresetSerializer, ScheduleBreakSerializer, MachineSetScheduleSerializer)
+                          WorkSchedulePresetSerializer, ScheduleBreakSerializer, MachineSetScheduleSerializer, MachineLineNameSerializer)
 from .services import create_breakdown_with_initial_move, MoveBreakdownService, EndBreakdownService, get_machine_break_status
 from .filters import BreakdownFilter, BreakdownMoveFilter
 from .mixins import WorkshopContextMixin, CurrentWorkshopMixin, CurrentDepartmentsMixin
@@ -41,9 +41,30 @@ class CustomPagination(PageNumberPagination):
         return super().paginate_queryset(queryset, request, view=view)
 
 
+def machine_search_q(search_query):
+    """Wspólne wyszukiwanie maszyn: nazwa, alias, faza, SIGIP, nazwa linii."""
+    return (
+        Q(name__icontains=search_query) |
+        Q(alias__icontains=search_query) |
+        Q(phase_id__icontains=search_query) |
+        Q(sigip_num__icontains=search_query) |
+        Q(line__name__icontains=search_query)
+    )
+
+
 class DepartmentViewSet(viewsets.ModelViewSet):
     serializer_class = DepartmentSerializer
     queryset = Department.objects.all()
+
+
+class MachineLineNameViewSet(viewsets.ModelViewSet):
+    """Linie maszyn: GET /machine-lines/?search=lin (&no_pagination=true dla autocomplete)."""
+    serializer_class = MachineLineNameSerializer
+    permission_classes = [IsAuthenticated]
+    queryset = MachineLineName.objects.all().order_by('name')
+    filter_backends = [SearchFilter]
+    search_fields = ['name']
+    pagination_class = CustomPagination
 
 
 class MachinesInCurrentWorkshop(CurrentWorkshopMixin, ListAPIView):
@@ -51,20 +72,22 @@ class MachinesInCurrentWorkshop(CurrentWorkshopMixin, ListAPIView):
     permission_classes = [IsAuthenticated]
     queryset = Machine.objects.all()
     workshop_lookup_field = 'workshop'
-    
+
     def get_queryset(self):
         qs = super().get_queryset()
         search_query = self.request.query_params.get('search') or self.request.query_params.get('q')
         if search_query:
-            search_query = search_query.strip()
-            qs = qs.filter(
-                Q(name__icontains=search_query) |
-                Q(alias__icontains=search_query) |
-                Q(phase_id__icontains=search_query) |
-                Q(sigip_num__icontains=search_query)
-            )
-        return qs.select_related('workshop', 'department').order_by('name')
-    
+            qs = qs.filter(machine_search_q(search_query.strip()))
+
+        line_id = self.request.query_params.get('line')
+        if line_id:
+            qs = qs.filter(line_id=line_id)
+
+        return (qs
+                .select_related('workshop', 'department', 'line')
+                .prefetch_related('schedules__breaks')
+                .order_by('name'))
+
 
 class MachineViewSet(viewsets.ModelViewSet):
     serializer_class = MachineMainSerializer
@@ -72,8 +95,12 @@ class MachineViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         workshop_id = self.kwargs.get('workshop_id')
-        return Machine.objects.select_related('workshop', 'department').filter(workshop=workshop_id).order_by('-id')
-    
+        return (Machine.objects
+                .select_related('workshop', 'department', 'line')
+                .prefetch_related('schedules__breaks')
+                .filter(workshop=workshop_id)
+                .order_by('-id'))
+
     def perform_create(self, serializer):
         workshop_id = self.kwargs.get('workshop_id')
         workshop = get_object_or_404(Workshop, pk=workshop_id)
@@ -85,7 +112,7 @@ class BreakdownListToMachine(ListAPIView):
     pagination_class = CustomPagination
     filter_backends = [filters.DjangoFilterBackend]
     filterset_class = BreakdownFilter
-    
+
     def get_queryset(self):
         machine_id = self.kwargs.get('machine_id')
         queryset = Breakdown.objects.select_related('reporter', 'machine').prefetch_related(
@@ -103,11 +130,16 @@ class BreakdownListView(CurrentWorkshopMixin, ListAPIView):
     permission_classes = [IsAuthenticated]
     workshop_lookup_field = 'machine__workshop'
     queryset = Breakdown.objects.all()
-    
+
     def get_queryset(self):
         qs = super().get_queryset()
-        return qs.with_last_status().exclude(history__status=BreakdownMove.Status.ENDED).order_by('-created_at')
-        
+        return (qs
+                .with_last_status()
+                .exclude(history__status=BreakdownMove.Status.ENDED)
+                .select_related('machine', 'machine__line', 'reporter')
+                .prefetch_related('machine__schedules')
+                .order_by('-created_at'))
+
 
 class BreakdownCreateView(CreateAPIView):
     serializer_class = BreakdownCreateSerializer
@@ -115,16 +147,17 @@ class BreakdownCreateView(CreateAPIView):
 
     def perform_create(self, serializer):
             instance = create_breakdown_with_initial_move(
-                user=self.request.user, 
+                user=self.request.user,
                 Breakdown_data=serializer.validated_data
             )
 
 
 class BreakdownCreateMachineHelper(ListAPIView):
+    """Wybór maszyny przy tworzeniu awarii. Filtry: ?search=..., ?line=<id>."""
     serializer_class = MachineSerializer
     permission_classes = [IsAuthenticated]
     filter_backends = [SearchFilter]
-    search_fields = ['name', 'alias']
+    search_fields = ['name', 'alias', 'line__name']
 
     def get_queryset(self):
         user = self.request.user
@@ -143,16 +176,24 @@ class BreakdownCreateMachineHelper(ListAPIView):
             .distinct()[:3]
         )
 
-        return Machine.objects.filter(
-            department_id__in=current_department_ids
-        ).annotate(
-            priority_group=Case(
-                When(id__in=recent_machine_ids, then=Value(1)),
-                default=Value(0),
-                output_field=IntegerField()
-            )
-        ).order_by('-priority_group', 'name')
-        
+        qs = Machine.objects.filter(department_id__in=current_department_ids)
+
+        line_id = self.request.query_params.get('line')
+        if line_id:
+            qs = qs.filter(line_id=line_id)
+
+        return (qs
+                .select_related('line')
+                .prefetch_related('schedules')
+                .annotate(
+                    priority_group=Case(
+                        When(id__in=recent_machine_ids, then=Value(1)),
+                        default=Value(0),
+                        output_field=IntegerField()
+                    )
+                )
+                .order_by('-priority_group', 'name'))
+
 
 class BreakdownMakeMove(GenericAPIView):
     serializer_class = BreakdownMovePostSerializer
@@ -162,7 +203,7 @@ class BreakdownMakeMove(GenericAPIView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        move_status = serializer.validated_data['status'] 
+        move_status = serializer.validated_data['status']
         breakdown = serializer.validated_data['breakdown']
         description = serializer.validated_data['description']
 
@@ -173,7 +214,7 @@ class BreakdownMakeMove(GenericAPIView):
         service.execute()
 
         return Response({"detail": "success"}, status=status.HTTP_201_CREATED)
-    
+
 
 class BreakdownMakeEndedMove(GenericAPIView):
     serializer_class = EndBreakdownSerializer
@@ -231,8 +272,9 @@ class BreakdownListViewToReport(CurrentWorkshopMixin, ListAPIView):
         qs = super().get_queryset()
 
         return (qs
-                .select_related('machine', 'reporter')
+                .select_related('machine', 'machine__line', 'reporter')
                 .prefetch_related(
+                    'machine__schedules',
                     Prefetch('history',
                             BreakdownMove.objects
                             .select_related('user')),
@@ -240,7 +282,7 @@ class BreakdownListViewToReport(CurrentWorkshopMixin, ListAPIView):
                              AdditionalEndingBreakdownInfo.objects
                             .select_related('closing_breakdown_type', 'responsible_for_breakdown')))
                 .order_by('-created_at'))
-    
+
 
 class ClosingBreakdownTypesViewset(WorkshopContextMixin, viewsets.ModelViewSet):
     serializer_class = ClosingBreakdownTypesSerializer
@@ -280,8 +322,6 @@ class WorkshopViewset(viewsets.ModelViewSet):
                 workshop=workshop
             )
 
-        
-
 
 class ListOfBreakdownsMoves(CurrentWorkshopMixin, ListAPIView):
     serializer_class = BreakdownMoveToHistorySerializer
@@ -294,9 +334,12 @@ class ListOfBreakdownsMoves(CurrentWorkshopMixin, ListAPIView):
     def get_queryset(self):
         qs = super().get_queryset()
         return (qs
-                .select_related('user', 'breakdown__reporter', 'breakdown__machine', 'breakdown__machine__department', 'breakdown__machine__workshop')
+                .select_related('user', 'breakdown__reporter', 'breakdown__machine', 'breakdown__machine__department',
+                                'breakdown__machine__workshop', 'breakdown__machine__line')
+                .prefetch_related('breakdown__machine__schedules__breaks')
                 .order_by('-created_at'))
-    
+
+
 class BreakdownOptionsView(CurrentWorkshopMixin, GenericAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = BreakdownOptionsResponseSerializer
@@ -308,6 +351,13 @@ class BreakdownOptionsView(CurrentWorkshopMixin, GenericAPIView):
             return Response({"error": "Workshop not found"}, status=status.HTTP_404_NOT_FOUND)
 
         machines = Machine.objects.filter(workshop=workshop).values('id', 'name')
+        # Tylko linie, które mają maszyny w bieżącym warsztacie
+        # (related_name na Machine.line to 'lines'; jeśli zmienisz na 'machines', popraw lookup)
+        lines = (MachineLineName.objects
+                 .filter(lines__workshop=workshop)
+                 .distinct()
+                 .order_by('name')
+                 .values('id', 'name'))
         responsibles = ResponsibleForBreakdown.objects.filter(workshop=workshop).values('id', 'name')
         close_types = ClosingBreakdownTypes.objects.filter(workshop=workshop).values('id', 'name')
 
@@ -316,6 +366,7 @@ class BreakdownOptionsView(CurrentWorkshopMixin, GenericAPIView):
 
         data = {
             "machines": machines,
+            "lines": lines,
             "priorities": priorities,
             "statuses": statuses,
             "responsibles": responsibles,
@@ -324,7 +375,7 @@ class BreakdownOptionsView(CurrentWorkshopMixin, GenericAPIView):
 
         serializer = BreakdownOptionsResponseSerializer(data)
         return Response(serializer.data)
-    
+
 
 class BreakdownMoveOptionView(CurrentWorkshopMixin, GenericAPIView):
     serializer_class = BreakdownMoveOptionResponseSerializer
@@ -335,7 +386,7 @@ class BreakdownMoveOptionView(CurrentWorkshopMixin, GenericAPIView):
 
         if not workshop:
             return Response({"error": "Workshop not found"}, status=status.HTTP_404_NOT_FOUND)
-        
+
         departments = Department.objects.all().values('id', 'name')
         machines = Machine.objects.filter(workshop=workshop).values('id', 'name')
 
@@ -352,7 +403,7 @@ class BreakdownMoveOptionView(CurrentWorkshopMixin, GenericAPIView):
 
         serializer = BreakdownMoveOptionResponseSerializer(data)
         return Response(serializer.data)
-        
+
 
 class EndBreakdownOptionsView(CurrentWorkshopMixin, GenericAPIView):
     serializer_class = EndBreakdownOptionsSerializer
@@ -381,16 +432,16 @@ class WorkshopParticipantViewset(viewsets.ModelViewSet):
         workshop_id = self.kwargs.get('workshop_id')
         qs = WorkshopParticipant.objects.select_related('user', 'workshop').filter(workshop=workshop_id)
         return qs
-    
+
     def perform_create(self, serializer):
         workshop_id = self.kwargs.get('workshop_id')
         workshop = get_object_or_404(Workshop, pk=workshop_id)
         serializer.save(workshop=workshop)
-    
+
     @action(detail=False, methods=['get'], serializer_class=UserSerializer)
     def get_available_users_to_add(self, request, *args, **kwargs):
         workshop_id = self.kwargs.get('workshop_id')
-        
+
         qs = CustomUser.objects.exclude(workshopparticipant__workshop_id=workshop_id)
 
         serializer = self.get_serializer(qs, many=True)
@@ -447,7 +498,7 @@ class ProductionWorkerViewSet(viewsets.ModelViewSet):
 class MachineNotesViewSet(viewsets.ModelViewSet):
     serializer_class = MachineNotesSerializer
     permission_classes = [IsAuthenticated]
-    
+
     parser_classes = [MultiPartParser, FormParser]
 
     def perform_create(self, serializer):
@@ -519,14 +570,14 @@ class URProfilePanel(GenericAPIView):
 
 
 class ChangingCurrentWorkshop(GenericAPIView):
-    
+
     def post(self, request, *args, **kwargs):
         user = self.request.user
         workshop_id = request.data.get('workshop_id')
 
         if not workshop_id:
             return Response(
-                {"error": "Wymagane pole 'workshop_id'."}, 
+                {"error": "Wymagane pole 'workshop_id'."},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -534,7 +585,7 @@ class ChangingCurrentWorkshop(GenericAPIView):
             workshop_obj = Workshop.objects.get(id=workshop_id)
         except Workshop.DoesNotExist:
             return Response(
-                {"error": "Podany warsztat nie istnieje."}, 
+                {"error": "Podany warsztat nie istnieje."},
                 status=status.HTTP_404_NOT_FOUND
             )
 
@@ -544,9 +595,9 @@ class ChangingCurrentWorkshop(GenericAPIView):
         )
 
         message = "Utworzono nowy aktualny warsztat." if created else "Zaktualizowano aktualny warsztat."
-        
+
         return Response(
-            {"message": message, "workshop_id": current_workshop.workshop.id}, 
+            {"message": message, "workshop_id": current_workshop.workshop.id},
             status=status.HTTP_200_OK if not created else status.HTTP_201_CREATED
         )
 
@@ -575,7 +626,7 @@ class ToggleCurrentDepartmentView(GenericAPIView):
                 "department_id": department.id,
                 "is_active": False
             }, status=status.HTTP_200_OK)
-        
+
         else:
             CurrentDepartment.objects.create(user=user, department=department)
             return Response({
@@ -597,8 +648,8 @@ class DepartmentListView(GenericAPIView):
         )
 
         serializer = DepartmentToggleSerializer(
-            departments, 
-            many=True, 
+            departments,
+            many=True,
             context={'request': request, 'selected_department_ids': selected_ids}
         )
         return Response(serializer.data)
@@ -618,8 +669,9 @@ class BreakdownListViewForDepartments(CurrentDepartmentsMixin, ListAPIView):
 
         return (qs
                 .exclude(history__status=BreakdownMove.Status.ENDED)
-                .select_related('machine', 'reporter')
+                .select_related('machine', 'machine__line', 'reporter')
                 .prefetch_related(
+                    'machine__schedules',
                     Prefetch(
                         'history',
                         queryset=BreakdownMove.objects.select_related('user')
@@ -627,7 +679,7 @@ class BreakdownListViewForDepartments(CurrentDepartmentsMixin, ListAPIView):
                     Prefetch(
                         'additional',
                         queryset=AdditionalEndingBreakdownInfo.objects.select_related(
-                            'closing_breakdown_type', 
+                            'closing_breakdown_type',
                             'responsible_for_breakdown'
                         )
                     )
@@ -640,19 +692,21 @@ class MachinesInCurrentDepartments(CurrentDepartmentsMixin, ListAPIView):
     permission_classes = [IsAuthenticated]
     queryset = Machine.objects.all()
     department_lookup_field = 'department_id__in'
-    
+
     def get_queryset(self):
         qs = super().get_queryset()
         search_query = self.request.query_params.get('search') or self.request.query_params.get('q')
         if search_query:
-            search_query = search_query.strip()
-            qs = qs.filter(
-                Q(name__icontains=search_query) |
-                Q(alias__icontains=search_query) |
-                Q(phase_id__icontains=search_query) |
-                Q(sigip_num__icontains=search_query)
-            )
-        return qs.select_related('workshop', 'department').prefetch_related('schedules__breaks').order_by('name')
+            qs = qs.filter(machine_search_q(search_query.strip()))
+
+        line_id = self.request.query_params.get('line')
+        if line_id:
+            qs = qs.filter(line_id=line_id)
+
+        return (qs
+                .select_related('workshop', 'department', 'line')
+                .prefetch_related('schedules__breaks')
+                .order_by('name'))
 
 
 class WorkSchedulePresetViewSet(CurrentDepartmentsMixin, viewsets.ModelViewSet):

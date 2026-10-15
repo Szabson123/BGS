@@ -1,9 +1,9 @@
 from django_filters import rest_framework as filters
+from django.db import models
+from django.db.models import Subquery, OuterRef
+
 from .models import Breakdown, BreakdownMove
 from user.models import CustomUser
-from django.db.models import Subquery, OuterRef
-from user.models import CustomUser
-from django.db import models
 
 
 class BreakdownFilter(filters.FilterSet):
@@ -25,23 +25,27 @@ class BreakdownFilter(filters.FilterSet):
     close_type = filters.NumberFilter(field_name='additional__closing_breakdown_type__id')
     responsible = filters.NumberFilter(field_name='additional__responsible_for_breakdown__id')
 
+    line = filters.NumberFilter(field_name='machine__line_id', label='Linia (ID)')
+    line_name = filters.CharFilter(field_name='machine__line__name', lookup_expr='icontains', label='Linia (nazwa)')
+
     class Meta:
         model = Breakdown
-        fields = ['priority', 'reporter', 'machine', 'close_type', 'responsible']
+        fields = ['priority', 'reporter', 'machine', 'close_type', 'responsible', 'line', 'line_name']
 
     def filter_by_all_descriptions(self, queryset, name, value):
         q = (
-            models.Q(description__icontains=value) | 
+            models.Q(description__icontains=value) |
             models.Q(history__description__icontains=value) |
             models.Q(reporter__first_name__icontains=value) |
             models.Q(reporter__last_name__icontains=value) |
-            models.Q(reporter__username__icontains=value)
+            models.Q(reporter__username__icontains=value) |
+            models.Q(machine__line__name__icontains=value)
         )
         clean_val = value.lstrip('#').strip()
         if clean_val.isdigit():
             q |= models.Q(pk=int(clean_val))
         return queryset.filter(q).distinct()
-    
+
     def filter_by_last_status(self, queryset, name, value):
         latest_status_subquery = BreakdownMove.objects.filter(
             breakdown=OuterRef('pk')
@@ -50,13 +54,14 @@ class BreakdownFilter(filters.FilterSet):
         return queryset.annotate(
             last_status_val=Subquery(latest_status_subquery)
         ).filter(last_status_val=value)
-    
+
 
 class BreakdownMoveFilter(filters.FilterSet):
     date = filters.DateTimeFromToRangeFilter(field_name='created_at', label='Data zgłoszenia (od-do)')
     machine = filters.NumberFilter(field_name='breakdown__machine__id')
     department = filters.NumberFilter(field_name='breakdown__machine__department__id')
+    line = filters.NumberFilter(field_name='breakdown__machine__line_id', label='Linia (ID)')
 
     class Meta:
         model = BreakdownMove
-        fields = ['status', 'machine', 'department', 'user']
+        fields = ['status', 'machine', 'department', 'line', 'user']

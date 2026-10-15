@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="pl" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MES Console V5.0 - Station Cockpit</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        darkbg: '#0f172a',
+                        cardbg: '#1e293b',
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+        body { 
+            font-family: 'Inter', sans-serif; 
+            background-color: #0f172a; 
+            color: #f8fafc;
+        }
+        .glass-panel {
+            background: #1e293b;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3), 0 4px 6px -2px rgba(0, 0, 0, 0.15);
+            border-radius: 1rem;
+        }
+        
+        .status-dot {
+            height: 10px; width: 10px; border-radius: 50%; display: inline-block;
+        }
+        
+        /* Custom scrollbar */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #475569; }
+        
+        /* Circular Progress */
+        .circular-chart { display: block; margin: 0 auto; max-width: 80%; max-height: 250px; }
+        .circle-bg { fill: none; stroke: #334155; stroke-width: 3; }
+        .circle { fill: none; stroke-width: 3; stroke-linecap: round; animation: progress 1s ease-out forwards; }
+        @keyframes progress { 0% { stroke-dasharray: 0 100; } }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col p-4 md:p-6 lg:p-8 overflow-x-hidden">
+
+    <!-- TOP HEADER -->
+    <header class="flex flex-col lg:flex-row justify-between items-start lg:items-center mb-6 gap-4">
+        <div class="flex items-center gap-4">
+            <div class="bg-blue-600/20 p-3 rounded-xl border border-blue-500/30 text-blue-400">
+                <i class="fa-solid fa-microchip text-2xl"></i>
+            </div>
+            <div>
+                <div class="text-xs text-slate-400 tracking-wider font-semibold uppercase mb-1">
+                    MES CONSOLE V5.0 &bull; LINE-2 :: ST-04
+                </div>
+                <h1 class="text-2xl font-bold tracking-tight text-white flex items-center gap-2">
+                    STATION COCKPIT: FVT-04 
+                    <span class="text-sm font-medium text-slate-500 ml-2">(PCB Assembly Line 2)</span>
+                </h1>
+            </div>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-3 w-full lg:w-auto">
+            <!-- Downtime Alert -->
+            <button class="bg-rose-500/10 border border-rose-500/30 text-rose-400 px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 hover:bg-rose-500/20 transition-colors animate-pulse shadow-[0_0_15px_rgba(244,63,94,0.15)]">
+                <span class="status-dot bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.8)]"></span>
+                AWARIA / DOWNTIME
+            </button>
+            
+            <!-- PN Info -->
+            <div class="bg-slate-800/80 border border-slate-700 px-4 py-2 rounded-lg flex flex-col justify-center">
+                <span class="text-[10px] text-slate-400 uppercase font-semibold">Kod Końcowy</span>
+                <span class="text-sm font-mono font-bold text-slate-200">PN: 98234-A2-ECU</span>
+            </div>
+
+            <!-- FPY Gauge -->
+            <div class="bg-slate-800/80 border border-slate-700 px-4 py-2 rounded-lg flex items-center gap-4">
+                <div class="flex flex-col justify-center">
+                    <span class="text-[10px] text-slate-400 uppercase font-semibold">Station FPY</span>
+                    <span class="text-xl font-bold text-emerald-400">88.4%</span>
+                </div>
+                <div class="w-10 h-10 relative">
+                    <svg viewBox="0 0 36 36" class="circular-chart text-emerald-400">
+                        <path class="circle-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+                        <path class="circle" stroke="currentColor" stroke-dasharray="88.4, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+                    </svg>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- MAIN GRID -->
+    <main class="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-6">
+        
+        <!-- LEFT COLUMN (Charts & Stats) -->
+        <div class="lg:col-span-7 flex flex-col gap-6">
+            
+            <!-- FPY Trend -->
+            <div class="glass-panel p-5 flex flex-col">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-sm font-bold text-slate-300 flex items-center gap-2">
+                        <i class="fa-solid fa-chart-line text-blue-400"></i>
+                        1.5H FPY TREND <span class="text-slate-500 text-xs font-normal">(15-MIN BUCKETS)</span>
+                    </h2>
+                    <span class="text-xs text-slate-400">Ostatnie 90 min</span>
+                </div>
+                <div class="relative h-56 w-full">
+                    <canvas id="fpyChart"></canvas>
+                </div>
+            </div>
+
+            <!-- Poka-Yoke Master Board -->
+            <div class="glass-panel p-5 relative overflow-hidden group border-emerald-500/20">
+                <div class="absolute inset-0 bg-gradient-to-r from-emerald-500/5 to-transparent opacity-50"></div>
+                <div class="flex justify-between items-start mb-4 relative z-10">
+                    <h2 class="text-sm font-bold text-slate-300 flex items-center gap-2">
+                        <i class="fa-solid fa-shield-check text-emerald-400"></i>
+                        POKA-YOKE MASTER BOARD (WZORZEC)
+                    </h2>
+                    <span class="text-xs bg-slate-800 text-slate-300 px-2 py-1 rounded border border-slate-700">Shift 1</span>
+                </div>
+                
+                <div class="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-4 flex justify-between items-center relative z-10 transition-all hover:bg-emerald-500/20">
+                    <div class="flex items-center gap-4">
+                        <div class="bg-emerald-500 text-white rounded-full w-10 h-10 flex items-center justify-center shadow-[0_0_15px_rgba(16,185,129,0.4)]">
+                            <i class="fa-solid fa-check"></i>
+                        </div>
+                        <div>
+                            <div class="text-sm font-bold text-emerald-400">Golden Sample Last Test</div>
+                            <div class="text-xs text-emerald-500/70 mt-0.5">Today, 14:00 (PASS)</div>
+                        </div>
+                    </div>
+                    <div class="bg-emerald-400 text-emerald-950 px-3 py-1.5 rounded-md text-xs font-bold tracking-wide">
+                        OK / VALIDATED
+                    </div>
+                </div>
+            </div>
+
+            <!-- Error Distribution -->
+            <div class="glass-panel p-5 flex-1">
+                <div class="flex justify-between items-center mb-5">
+                    <h2 class="text-sm font-bold text-slate-300 flex items-center gap-2">
+                        <i class="fa-solid fa-triangle-exclamation text-amber-400"></i>
+                        ERROR DISTRIBUTION <span class="text-slate-500 text-xs font-normal">(LAST 100 TESTS)</span>
+                    </h2>
+                    <span class="text-xs font-medium text-slate-400 bg-slate-800 px-2 py-1 rounded border border-slate-700">Total Failures: <span class="text-rose-400 font-bold">17</span></span>
+                </div>
+                
+                <div class="space-y-4">
+                    <!-- Error 1 -->
+                    <div class="flex items-center justify-between p-3 rounded-lg bg-slate-800/50 border border-slate-700/50 hover:border-rose-500/30 transition-colors">
+                        <div class="flex items-center gap-3">
+                            <span class="status-dot bg-rose-500 shadow-[0_0_5px_rgba(244,63,94,0.5)]"></span>
+                            <span class="font-mono text-sm text-slate-200">ERR_VOLT_PIN_12</span>
+                        </div>
+                        <div class="flex items-center gap-3">
+                            <div class="w-32 h-1.5 bg-slate-700 rounded-full overflow-hidden hidden sm:block">
+                                <div class="bg-rose-500 h-full" style="width: 70%"></div>
+                            </div>
+                            <span class="bg-rose-500/20 text-rose-400 text-xs px-2 py-1 rounded border border-rose-500/20 font-semibold w-16 text-center">12 times</span>
+                        </div>
+                    </div>
+                    
+                    <!-- Error 2 -->
+                    <div class="flex items-center justify-between p-3 rounded-lg bg-slate-800/50 border border-slate-700/50 hover:border-amber-500/30 transition-colors">
+                        <div class="flex items-center gap-3">
+                            <span class="status-dot bg-amber-500 shadow-[0_0_5px_rgba(245,158,11,0.5)]"></span>
+                            <span class="font-mono text-sm text-slate-200">PNEUMATIC_TIMEOUT</span>
+                        </div>
+                        <div class="flex items-center gap-3">
+                            <div class="w-32 h-1.5 bg-slate-700 rounded-full overflow-hidden hidden sm:block">
+                                <div class="bg-amber-500 h-full" style="width: 20%"></div>
+                            </div>
+                            <span class="bg-amber-500/20 text-amber-400 text-xs px-2 py-1 rounded border border-amber-500/20 font-semibold w-16 text-center">3 times</span>
+                        </div>
+                    </div>
+                    
+                    <!-- Error 3 -->
+                    <div class="flex items-center justify-between p-3 rounded-lg bg-slate-800/50 border border-slate-700/50 hover:border-slate-500/30 transition-colors">
+                        <div class="flex items-center gap-3">
+                            <span class="status-dot bg-slate-400"></span>
+                            <span class="font-mono text-sm text-slate-200">CAN_COMM_TIMEOUT</span>
+                        </div>
+                        <div class="flex items-center gap-3">
+                            <div class="w-32 h-1.5 bg-slate-700 rounded-full overflow-hidden hidden sm:block">
+                                <div class="bg-slate-400 h-full" style="width: 10%"></div>
+                            </div>
+                            <span class="bg-slate-600/30 text-slate-300 text-xs px-2 py-1 rounded border border-slate-600/30 font-semibold w-16 text-center">2 times</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+        </div>
+
+        <!-- RIGHT COLUMN (Logs & History) -->
+        <div class="lg:col-span-5 flex flex-col gap-6">
+            
+            <!-- Serial Numbers Log -->
+            <div class="glass-panel p-0 flex flex-col overflow-hidden">
+                <div class="p-4 border-b border-slate-700 flex justify-between items-center bg-slate-800/30">
+                    <h2 class="text-sm font-bold text-slate-300 flex items-center gap-2">
+                        <i class="fa-solid fa-list text-blue-400"></i>
+                        RECENT SERIAL NUMBERS LOG
+                    </h2>
+                    <span class="text-xs text-emerald-400 flex items-center gap-1">
+                        <span class="status-dot bg-emerald-400 animate-pulse w-2 h-2"></span> Live Feed
+                    </span>
+                </div>
+                
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left text-sm whitespace-nowrap">
+                        <thead class="text-xs text-slate-400 bg-slate-800/50 uppercase font-semibold">
+                            <tr>
+                                <th class="px-4 py-3">Serial Number (SN)</th>
+                                <th class="px-4 py-3">Time</th>
+                                <th class="px-4 py-3">Status</th>
+                                <th class="px-4 py-3">Error Code</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-slate-700/50 text-slate-300 font-mono text-xs">
+                            <tr class="hover:bg-slate-800/50 transition-colors">
+                                <td class="px-4 py-3 font-semibold text-slate-200">SN-98234-08912</td>
+                                <td class="px-4 py-3">14:28:12</td>
+                                <td class="px-4 py-3">
+                                    <span class="bg-rose-500/20 text-rose-400 border border-rose-500/30 px-2 py-0.5 rounded text-[10px] font-bold">FAIL</span>
+                                </td>
+                                <td class="px-4 py-3 text-rose-400">ERR_VOLT_PIN_12</td>
+                            </tr>
+                            <tr class="hover:bg-slate-800/50 transition-colors">
+                                <td class="px-4 py-3 font-semibold text-slate-200">SN-98234-08911</td>
+                                <td class="px-4 py-3">14:27:04</td>
+                                <td class="px-4 py-3">
+                                    <span class="bg-rose-500/20 text-rose-400 border border-rose-500/30 px-2 py-0.5 rounded text-[10px] font-bold">FAIL</span>
+                                </td>
+                                <td class="px-4 py-3 text-rose-400">PNEUMATIC_TIMEOUT</td>
+                            </tr>
+                            <tr class="hover:bg-slate-800/50 transition-colors">
+                                <td class="px-4 py-3 font-semibold text-slate-200">SN-98234-08910</td>
+                                <td class="px-4 py-3">14:25:40</td>
+                                <td class="px-4 py-3">
+                                    <span class="bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded text-[10px] font-bold">PASS</span>
+                                </td>
+                                <td class="px-4 py-3 text-slate-500">-</td>
+                            </tr>
+                            <tr class="hover:bg-slate-800/50 transition-colors">
+                                <td class="px-4 py-3 font-semibold text-slate-200">SN-98234-08909</td>
+                                <td class="px-4 py-3">14:24:18</td>
+                                <td class="px-4 py-3">
+                                    <span class="bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded text-[10px] font-bold">PASS</span>
+                                </td>
+                                <td class="px-4 py-3 text-slate-500">-</td>
+                            </tr>
+                            <tr class="hover:bg-slate-800/50 transition-colors">
+                                <td class="px-4 py-3 font-semibold text-slate-200">SN-98234-08908</td>
+                                <td class="px-4 py-3">14:23:01</td>
+                                <td class="px-4 py-3">
+                                    <span class="bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded text-[10px] font-bold">PASS</span>
+                                </td>
+                                <td class="px-4 py-3 text-slate-500">-</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Downtime History -->
+            <div class="glass-panel p-5 flex flex-col">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-sm font-bold text-slate-300 flex items-center gap-2">
+                        <i class="fa-solid fa-clock-rotate-left text-blue-400"></i>
+                        DOWNTIME HISTORY
+                    </h2>
+                    <span class="text-xs text-slate-400">Ostatnie awarie</span>
+                </div>
+                
+                <div class="relative mb-4">
+                    <i class="fa-solid fa-search absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-500 text-sm"></i>
+                    <input type="text" placeholder="Szukaj w historii awarii... (np. pneumatyka)" class="w-full bg-slate-800/80 border border-slate-700 text-sm text-slate-200 rounded-lg pl-9 pr-3 py-2 focus:outline-none focus:border-blue-500/50 transition-colors placeholder-slate-500">
+                </div>
+                
+                <div class="space-y-3 mb-4">
+                    <!-- Downtime Item 1 -->
+                    <div class="border-l-2 border-rose-500 bg-slate-800/40 p-3 rounded-r-lg relative">
+                        <div class="flex justify-between items-start">
+                            <div>
+                                <div class="text-sm font-bold text-slate-200">14:28 - Trwa</div>
+                                <div class="text-xs text-slate-400 mt-1">Błąd pinów pomiarowych fixture X2</div>
+                            </div>
+                            <span class="bg-rose-500/20 text-rose-400 text-[10px] px-2 py-1 rounded font-bold uppercase border border-rose-500/20">Awaria</span>
+                        </div>
+                    </div>
+                    
+                    <!-- Downtime Item 2 -->
+                    <div class="border-l-2 border-amber-500 bg-slate-800/40 p-3 rounded-r-lg relative">
+                        <div class="flex justify-between items-start">
+                            <div>
+                                <div class="text-sm font-bold text-slate-200">11:15 (12 min)</div>
+                                <div class="text-xs text-slate-400 mt-1">Spadek ciśnienia pneumatyki</div>
+                            </div>
+                            <span class="bg-amber-500/20 text-amber-400 text-[10px] px-2 py-1 rounded font-bold uppercase border border-amber-500/20">Pneumatyka</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <button class="w-full py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg text-sm text-slate-300 transition-colors flex items-center justify-center gap-2 font-medium">
+                    Pokaż pełną historię (Full History) <i class="fa-solid fa-arrow-right text-xs"></i>
+                </button>
+            </div>
+
+            <!-- Operator Notes -->
+            <div class="bg-amber-500/10 border border-amber-500/30 rounded-xl p-4 relative overflow-hidden flex-1">
+                <div class="absolute -right-4 -top-4 text-amber-500/10 text-6xl">
+                    <i class="fa-solid fa-note-sticky"></i>
+                </div>
+                <div class="flex gap-3 relative z-10">
+                    <i class="fa-regular fa-note-sticky text-amber-400 text-lg mt-0.5"></i>
+                    <div>
+                        <div class="text-sm font-bold text-amber-400 mb-1">Notatki z maszyny (Operator Notes)</div>
+                        <div class="text-sm text-amber-200/80 italic leading-relaxed">
+                            "Uwaga: Luźny wtyk X2 na fixture. Janek (Zmiana I)"
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </main>
+
+    <!-- FOOTER -->
+    <footer class="mt-6 pt-4 border-t border-slate-800 flex flex-col sm:flex-row justify-between items-center gap-4">
+        <div class="flex items-center gap-3 text-sm font-mono bg-slate-800/50 px-4 py-2 rounded-lg border border-slate-700">
+            <span class="status-dot bg-rose-500 animate-pulse shadow-[0_0_8px_rgba(244,63,94,0.6)]"></span>
+            <span class="text-slate-400">System Status:</span>
+            <span class="text-rose-400 font-bold tracking-wide uppercase">Maintenance Required</span>
+        </div>
+        
+        <div class="flex gap-3 w-full sm:w-auto">
+            <button class="flex-1 sm:flex-none px-4 py-2 rounded-lg border border-slate-600 text-slate-300 hover:bg-slate-800 hover:text-white transition-colors text-sm font-medium flex items-center justify-center gap-2">
+                <i class="fa-solid fa-wrench text-slate-400"></i> Zgłoś części zamienne
+            </button>
+            <button class="flex-1 sm:flex-none px-6 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-white shadow-[0_0_15px_rgba(225,29,72,0.3)] transition-colors text-sm font-bold flex items-center justify-center gap-2 border border-rose-500">
+                <i class="fa-solid fa-play"></i> Rozpocznij naprawę / Start Repair
+            </button>
+        </div>
+    </footer>
+
+    <!-- CHART SCRIPT -->
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            const ctx = document.getElementById('fpyChart').getContext('2d');
+            
+            // Gradient creation for bars
+            const greenGradient = ctx.createLinearGradient(0, 0, 0, 400);
+            greenGradient.addColorStop(0, 'rgba(16, 185, 129, 0.8)');
+            greenGradient.addColorStop(1, 'rgba(16, 185, 129, 0.2)');
+            
+            const amberGradient = ctx.createLinearGradient(0, 0, 0, 400);
+            amberGradient.addColorStop(0, 'rgba(245, 158, 11, 0.8)');
+            amberGradient.addColorStop(1, 'rgba(245, 158, 11, 0.2)');
+            
+            const roseGradient = ctx.createLinearGradient(0, 0, 0, 400);
+            roseGradient.addColorStop(0, 'rgba(244, 63, 94, 0.8)');
+            roseGradient.addColorStop(1, 'rgba(244, 63, 94, 0.2)');
+
+            new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: ['13:15', '13:30', '13:45', '14:00', '14:15', '14:30'],
+                    datasets: [{
+                        label: 'FPY %',
+                        data: [95, 90, 85, 80, 60, 5],
+                        backgroundColor: [
+                            greenGradient, 
+                            greenGradient, 
+                            amberGradient, 
+                            amberGradient, 
+                            roseGradient, 
+                            'rgba(244, 63, 94, 1)' // Solid red for STOP
+                        ],
+                        borderColor: [
+                            '#10b981', '#10b981', '#f59e0b', '#f59e0b', '#f43f5e', '#f43f5e'
+                        ],
+                        borderWidth: 1,
+                        borderRadius: 6,
+                        barPercentage: 0.7
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            backgroundColor: 'rgba(30, 41, 59, 0.9)',
+                            titleColor: '#94a3b8',
+                            bodyColor: '#f8fafc',
+                            borderColor: 'rgba(255,255,255,0.1)',
+                            borderWidth: 1,
+                            padding: 10,
+                            displayColors: false,
+                            callbacks: {
+                                label: function(context) {
+                                    if(context.dataIndex === 5) return 'STOP (0%)';
+                                    return context.parsed.y + '%';
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            max: 100,
+                            grid: {
+                                color: 'rgba(255, 255, 255, 0.05)',
+                                drawBorder: false,
+                            },
+                            ticks: {
+                                color: '#64748b',
+                                font: { family: 'Inter', size: 11 },
+                                callback: function(value) { return value + '%' }
+                            }
+                        },
+                        x: {
+                            grid: { display: false, drawBorder: false },
+                            ticks: {
+                                color: '#94a3b8',
+                                font: { family: 'Inter', size: 12, weight: '500' }
+                            }
+                        }
+                    },
+                    animation: {
+                        duration: 2000,
+                        easing: 'easeOutQuart'
+                    }
+                }
+            });
+        });
+    </script>
+</body>
+</html>
