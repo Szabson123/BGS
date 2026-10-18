@@ -5,7 +5,9 @@ from rest_framework.test import APIClient
 from rest_framework import status
 
 from user.models import CustomUser
-from .models import Workshop, Machine, Department, WorkSchedulePreset, ScheduleBreak
+from django.contrib.auth.models import Group
+from .models import (Workshop, Machine, Department, WorkSchedulePreset, ScheduleBreak, ProductionTeam,
+                     CurrentDepartment, Breakdown, ResponsibleForBreakdown)
 from .services import get_machine_break_status
 
 
@@ -318,4 +320,217 @@ class CurrentDepartmentScheduleTests(TestCase):
         self.assertNotIn(self.preset_dept3.id, preset_ids)
 
 
+class ProductionTeamTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        prod_group, _ = Group.objects.get_or_create(name='ur_production')
+        sup_group, _ = Group.objects.get_or_create(name='ur_production_supervisor')
+        admin_group, _ = Group.objects.get_or_create(name='ur_admin')
 
+        self.admin = CustomUser.objects.create_user(username='admin', password='x', is_active=True)
+        self.admin.groups.add(admin_group)
+
+        self.sup_a = CustomUser.objects.create_user(username='sup_a', password='x', is_active=True)
+        self.sup_b = CustomUser.objects.create_user(username='sup_b', password='x', is_active=True)
+        self.sup_c = CustomUser.objects.create_user(username='sup_c', password='x', is_active=True)
+        for sup in (self.sup_a, self.sup_b, self.sup_c):
+            sup.groups.add(sup_group)
+
+        def worker(username):
+            user = CustomUser.objects.create_user(username=username, password='x', is_active=True)
+            user.groups.add(prod_group)
+            return user
+
+        self.worker_a = worker('worker_a')
+        self.worker_b = worker('worker_b')
+        self.worker_free = worker('worker_free')
+
+        self.team_a = ProductionTeam.objects.create(name='Zespół A')
+        self.team_a.supervisors.add(self.sup_a)
+        self.team_a.members.add(self.worker_a)
+
+        self.team_b = ProductionTeam.objects.create(name='Zespół B')
+        self.team_b.supervisors.add(self.sup_b)
+        self.team_b.members.add(self.worker_b)
+
+        self.team_a2 = ProductionTeam.objects.create(name='Zespół A2')
+        self.team_a2.supervisors.add(self.sup_a)
+
+    def _worker_ids(self):
+        res = self.client.get('/api/ur/production-workers/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        return {w['id'] for w in res.json()}
+
+    def test_supervisor_sees_own_team_and_unassigned_workers(self):
+        self.client.force_authenticate(self.sup_a)
+        self.assertEqual(self._worker_ids(), {self.worker_a.id, self.worker_free.id})
+
+    def test_admin_sees_all_workers_with_teams(self):
+        self.client.force_authenticate(self.admin)
+        res = self.client.get('/api/ur/production-workers/')
+        by_id = {w['id']: w for w in res.json()}
+        self.assertEqual(set(by_id), {self.worker_a.id, self.worker_b.id, self.worker_free.id})
+        self.assertEqual(by_id[self.worker_a.id]['teams'], [{'id': self.team_a.id, 'name': 'Zespół A'}])
+
+    def test_supervisor_cannot_delete_other_team_worker(self):
+        self.client.force_authenticate(self.sup_a)
+        res = self.client.delete(f'/api/ur/production-workers/{self.worker_b.id}/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertTrue(CustomUser.objects.filter(id=self.worker_b.id).exists())
+
+    def test_supervisor_lists_only_own_teams(self):
+        self.client.force_authenticate(self.sup_a)
+        res = self.client.get('/api/ur/production-teams/')
+        self.assertEqual({t['id'] for t in res.json()}, {self.team_a.id, self.team_a2.id})
+        res_other = self.client.get(f'/api/ur/production-teams/{self.team_b.id}/')
+        self.assertEqual(res_other.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_only_admin_creates_and_deletes_teams(self):
+        self.client.force_authenticate(self.sup_a)
+        res = self.client.post('/api/ur/production-teams/', {'name': 'Nowy'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        res = self.client.delete(f'/api/ur/production-teams/{self.team_a.id}/')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+        self.client.force_authenticate(self.admin)
+        res = self.client.post('/api/ur/production-teams/', {
+            'name': 'Nowy',
+            'supervisor_ids': [self.sup_c.id],
+            'member_ids': [self.worker_free.id],
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        team = ProductionTeam.objects.get(name='Nowy')
+        self.assertEqual(list(team.supervisors.all()), [self.sup_c])
+        self.assertEqual(list(team.members.all()), [self.worker_free])
+
+    def test_supervisor_can_change_members_of_own_team_only(self):
+        self.client.force_authenticate(self.sup_a)
+        res = self.client.patch(f'/api/ur/production-teams/{self.team_a.id}/', {
+            'member_ids': [self.worker_a.id, self.worker_free.id],
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(set(self.team_a.members.values_list('id', flat=True)), {self.worker_a.id, self.worker_free.id})
+
+        res = self.client.patch(f'/api/ur/production-teams/{self.team_a.id}/', {'name': 'Zmiana'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+        res = self.client.patch(f'/api/ur/production-teams/{self.team_a.id}/', {
+            'member_ids': [self.worker_a.id, self.worker_b.id],
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(self.team_a.members.filter(id=self.worker_b.id).exists())
+
+    def test_admin_transfers_all_teams(self):
+        self.client.force_authenticate(self.admin)
+        res = self.client.post('/api/ur/production-teams/transfer/', {
+            'from_user_id': self.sup_a.id,
+            'to_user_id': self.sup_c.id,
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(set(res.json()['moved_team_ids']), {self.team_a.id, self.team_a2.id})
+        self.assertFalse(self.sup_a.supervised_production_teams.exists())
+        self.assertEqual(set(self.sup_c.supervised_production_teams.values_list('id', flat=True)),
+                         {self.team_a.id, self.team_a2.id})
+
+        # Nowy supervisor od razu widzi pracowników przejętego zespołu
+        self.client.force_authenticate(self.sup_c)
+        self.assertIn(self.worker_a.id, self._worker_ids())
+
+    def test_admin_transfers_selected_teams(self):
+        self.client.force_authenticate(self.admin)
+        res = self.client.post('/api/ur/production-teams/transfer/', {
+            'from_user_id': self.sup_a.id,
+            'to_user_id': self.sup_c.id,
+            'team_ids': [self.team_a2.id],
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(list(self.sup_a.supervised_production_teams.all()), [self.team_a])
+        self.assertEqual(list(self.sup_c.supervised_production_teams.all()), [self.team_a2])
+
+    def test_transfer_validation_and_permissions(self):
+        self.client.force_authenticate(self.admin)
+        res = self.client.post('/api/ur/production-teams/transfer/', {
+            'from_user_id': self.sup_a.id, 'to_user_id': self.sup_a.id,
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+        res = self.client.post('/api/ur/production-teams/transfer/', {
+            'from_user_id': self.sup_a.id, 'to_user_id': self.sup_c.id, 'team_ids': [self.team_b.id],
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+        res = self.client.post('/api/ur/production-teams/transfer/', {
+            'from_user_id': self.sup_a.id, 'to_user_id': self.worker_free.id,
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+        self.client.force_authenticate(self.sup_a)
+        res = self.client.post('/api/ur/production-teams/transfer/', {
+            'from_user_id': self.sup_a.id, 'to_user_id': self.sup_c.id,
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_supervisor_creates_worker_in_own_team_only(self):
+        self.client.force_authenticate(self.sup_a)
+        res = self.client.post('/api/user/users/create-production-user/', {
+            'first_name': 'Jan', 'last_name': 'Nowak', 'team_id': self.team_a.id,
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        created = CustomUser.objects.get(username=res.json()['generated_username'])
+        self.assertTrue(self.team_a.members.filter(id=created.id).exists())
+
+        res = self.client.post('/api/user/users/create-production-user/', {
+            'first_name': 'Ewa', 'last_name': 'Kowal', 'team_id': self.team_b.id,
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class QualityWorkerReportTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        quality_group, _ = Group.objects.get_or_create(name='ur_quality')
+
+        self.quality = CustomUser.objects.create_user(username='quality', password='x', is_active=True)
+        self.quality.groups.add(quality_group)
+
+        self.workshop = Workshop.objects.create(name='Warsztat Q')
+        self.dept_in = Department.objects.create(name='Montaż')
+        self.dept_out = Department.objects.create(name='Lakiernia')
+        CurrentDepartment.objects.create(user=self.quality, department=self.dept_in)
+
+        self.machine_in = Machine.objects.create(name='Prasa M1', workshop=self.workshop, department=self.dept_in)
+        self.machine_out = Machine.objects.create(name='Kabina L1', workshop=self.workshop, department=self.dept_out)
+        self.breakdown_in = Breakdown.objects.create(machine=self.machine_in, description='Awaria w Montażu')
+        self.breakdown_out = Breakdown.objects.create(machine=self.machine_out, description='Awaria w Lakierni')
+
+        self.responsible = ResponsibleForBreakdown.objects.create(workshop=self.workshop, name='Mechanik')
+
+    def _report_ids(self):
+        res = self.client.get('/api/ur/all-breakdowns-to-report/?no_pagination=true')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        return {b['id'] for b in res.json()}
+
+    def test_quality_sees_breakdowns_from_current_departments_only(self):
+        self.client.force_authenticate(self.quality)
+        self.assertEqual(self._report_ids(), {self.breakdown_in.id})
+
+    def test_quality_without_departments_sees_nothing(self):
+        CurrentDepartment.objects.filter(user=self.quality).delete()
+        self.client.force_authenticate(self.quality)
+        self.assertEqual(self._report_ids(), set())
+
+    def test_quality_report_options_follow_departments(self):
+        self.client.force_authenticate(self.quality)
+        res = self.client.get('/api/ur/breakdown/raport/options/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        data = res.json()
+        self.assertEqual([m['id'] for m in data['machines']], [self.machine_in.id])
+        self.assertEqual([r['name'] for r in data['responsibles']], ['Mechanik'])
+
+    def test_user_without_quality_role_and_workshop_gets_no_report(self):
+        other = CustomUser.objects.create_user(username='other', password='x', is_active=True)
+        CurrentDepartment.objects.create(user=other, department=self.dept_in)
+        self.client.force_authenticate(other)
+        self.assertEqual(self._report_ids(), set())
+        res = self.client.get('/api/ur/breakdown/raport/options/')
+        self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)

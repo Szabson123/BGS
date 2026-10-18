@@ -88,6 +88,22 @@ class MachineLineName(BaseModel):
     name = models.CharField(max_length=255)
 
 
+# Komentarz -> zespół to stała jednostka między supervisorem a pracownikami produkcji.
+# Supervisor widzi pracowników ze swoich zespołów; gdy odchodzi, przekazuje się jego zespoły innej osobie.
+
+class ProductionTeam(BaseModel):
+    name = models.CharField(max_length=255, unique=True)
+    description = models.CharField(max_length=500, null=True, blank=True)
+    supervisors = models.ManyToManyField(CustomUser, related_name='supervised_production_teams', blank=True)
+    members = models.ManyToManyField(CustomUser, related_name='production_teams', blank=True)
+
+    class Meta:
+        ordering = ['name']
+
+    def __str__(self):
+        return self.name
+
+
 class Machine(BaseModel):
     department = models.ForeignKey(Department, on_delete=models.SET_NULL, null=True, blank=True, related_name='machines')
     workshop = models.ForeignKey(Workshop, on_delete=models.CASCADE, null=True, blank=True, related_name='machines')

@@ -12,6 +12,7 @@ router.register(r'responsible-for-breakdown/(?P<workshop_id>\d+)', ResponsibleFo
 router.register(r'participants/(?P<workshop_id>\d+)', WorkshopParticipantViewset, basename='participants')
 router.register(r'department-participants/(?P<department_id>\d+)', DepartmentParticipantViewset, basename='department-participants')
 router.register(r'production-workers', ProductionWorkerViewSet, basename='production-workers')
+router.register(r'production-teams', ProductionTeamViewSet, basename='production-teams')
 router.register(r'notes/(?P<machine_id>\d+)', MachineNotesViewSet, basename='notes')
 router.register(r'schedule-presets', WorkSchedulePresetViewSet, basename='schedule-presets')
 router.register(r'schedule-breaks', ScheduleBreakViewSet, basename='schedule-breaks')

@@ -5,7 +5,8 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from rest_framework import serializers
 
-from ur.models import Workshop, CurrentWorkshop, WorkshopParticipant, Department, CurrentDepartment
+from ur.models import Workshop, CurrentWorkshop, WorkshopParticipant, Department, CurrentDepartment, ProductionTeam
+from .permissions import is_production_admin
 
 User = get_user_model()
 
@@ -98,6 +99,14 @@ class CreateProductionUserSerializer(serializers.ModelSerializer):
         required=False,
         allow_null=True
     )
+
+    team_id = serializers.PrimaryKeyRelatedField(
+        queryset=ProductionTeam.objects.all(),
+        source='team',
+        write_only=True,
+        required=False,
+        allow_null=True
+    )
     
     generated_username = serializers.CharField(read_only=True, source='username')
 
@@ -107,6 +116,7 @@ class CreateProductionUserSerializer(serializers.ModelSerializer):
             'first_name', 
             'last_name', 
             'department_id',
+            'team_id',
             'card_code', 
             'number', 
             'main_page', 
@@ -130,10 +140,18 @@ class CreateProductionUserSerializer(serializers.ModelSerializer):
 
         return username
 
+    def validate_team_id(self, team):
+        request = self.context.get('request')
+        if team and request and not is_production_admin(request.user):
+            if not team.supervisors.filter(id=request.user.id).exists():
+                raise serializers.ValidationError("Możesz dodawać pracowników tylko do swoich zespołów.")
+        return team
+
     def create(self, validated_data):
         first_name = validated_data.pop('first_name')
         last_name = validated_data.pop('last_name')
         department = validated_data.pop('department', None)
+        team = validated_data.pop('team', None)
 
         username = self._generate_unique_username(first_name, last_name)
         dummy_password = ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(16))
@@ -157,6 +175,9 @@ class CreateProductionUserSerializer(serializers.ModelSerializer):
                     user=user,
                     department=department
                 )
+
+            if team:
+                team.members.add(user)
 
         return user
 

@@ -3,7 +3,7 @@ from rest_framework.validators import UniqueTogetherValidator
 
 from .models import (Workshop, CurrentWorkshop, Machine, Breakdown, BreakdownMove, MachineNotes, MachineNoteFile,
                      AdditionalEndingBreakdownInfo, ResponsibleForBreakdown, ClosingBreakdownTypes, 
-                     Department, WorkshopParticipant, WorkSchedulePreset, ScheduleBreak, CurrentDepartment, MachineLineName)
+                     Department, WorkshopParticipant, WorkSchedulePreset, ScheduleBreak, CurrentDepartment, MachineLineName, ProductionTeam)
 from user.models import CustomUser
 from django.db import transaction
 
@@ -41,6 +41,72 @@ class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = CustomUser
         fields = ['id', 'first_name', 'last_name', 'number', 'is_active', 'username']
+
+
+class TeamRefSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProductionTeam
+        fields = ['id', 'name']
+
+
+class ProductionWorkerSerializer(UserSerializer):
+    teams = TeamRefSerializer(source='production_teams', many=True, read_only=True)
+
+    class Meta(UserSerializer.Meta):
+        fields = UserSerializer.Meta.fields + ['teams']
+
+
+class ProductionTeamSerializer(serializers.ModelSerializer):
+    supervisors = UserSerializer(many=True, read_only=True)
+    members = UserSerializer(many=True, read_only=True)
+    supervisor_ids = serializers.PrimaryKeyRelatedField(
+        source='supervisors',
+        many=True,
+        write_only=True,
+        required=False,
+        queryset=CustomUser.objects.filter(groups__name='ur_production_supervisor').distinct(),
+    )
+    member_ids = serializers.PrimaryKeyRelatedField(
+        source='members',
+        many=True,
+        write_only=True,
+        required=False,
+        queryset=CustomUser.objects.filter(groups__name='ur_production').distinct(),
+    )
+
+    class Meta:
+        model = ProductionTeam
+        fields = ['id', 'name', 'description', 'supervisors', 'members', 'supervisor_ids', 'member_ids']
+
+
+class ProductionTeamTransferSerializer(serializers.Serializer):
+    from_user_id = serializers.PrimaryKeyRelatedField(source='from_user', queryset=CustomUser.objects.all())
+    to_user_id = serializers.PrimaryKeyRelatedField(
+        source='to_user',
+        queryset=CustomUser.objects.filter(groups__name='ur_production_supervisor').distinct(),
+    )
+    team_ids = serializers.PrimaryKeyRelatedField(
+        source='teams',
+        many=True,
+        required=False,
+        queryset=ProductionTeam.objects.all(),
+    )
+
+    def validate(self, attrs):
+        from_user = attrs['from_user']
+        to_user = attrs['to_user']
+        if from_user == to_user:
+            raise serializers.ValidationError("Wybierz dwie różne osoby.")
+
+        teams = attrs.get('teams')
+        if teams:
+            supervised_ids = set(from_user.supervised_production_teams.values_list('id', flat=True))
+            foreign = [team.name for team in teams if team.id not in supervised_ids]
+            if foreign:
+                raise serializers.ValidationError(
+                    {"team_ids": f"Te zespoły nie należą do wybranej osoby: {', '.join(foreign)}"}
+                )
+        return attrs
 
 class DepartmentSerializer(serializers.ModelSerializer):
     class Meta:

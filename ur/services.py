@@ -1,9 +1,48 @@
 from datetime import datetime, timedelta
 from django.utils import timezone
 from django.db import transaction
+from django.db.models import Q
 
-from .models import Breakdown, BreakdownMove, WorkshopParticipant, AdditionalEndingBreakdownInfo, Machine, WorkSchedulePreset, ScheduleBreak
+from .models import Breakdown, BreakdownMove, WorkshopParticipant, AdditionalEndingBreakdownInfo, Machine, WorkSchedulePreset, ScheduleBreak, ProductionTeam
 from rest_framework.exceptions import ValidationError
+from user.models import CustomUser
+from user.permissions import is_production_admin
+
+
+NON_PRODUCTION_WORKER_GROUPS = ['ur_admin', 'ur_owner', 'ur_production_supervisor', 'ur_supervisor', 'ur_worker', 'ur_cordinator']
+
+
+def production_workers_queryset():
+    return (
+        CustomUser.objects.filter(groups__name='ur_production')
+        .exclude(groups__name__in=NON_PRODUCTION_WORKER_GROUPS)
+        .exclude(is_superuser=True)
+        .distinct()
+    )
+
+
+def production_workers_visible_to(user):
+    """Admin widzi wszystkich; supervisor pracowników ze swoich zespołów oraz nieprzypisanych do żadnego zespołu."""
+    qs = production_workers_queryset()
+    if is_production_admin(user):
+        return qs
+    return qs.filter(
+        Q(production_teams__supervisors=user) | Q(production_teams__isnull=True)
+    ).distinct()
+
+
+@transaction.atomic
+def transfer_production_teams(from_user, to_user, teams=None):
+    """Przekazuje zespoły (wszystkie albo wskazane) od jednego supervisora drugiemu."""
+    qs = from_user.supervised_production_teams.all()
+    if teams is not None:
+        qs = qs.filter(id__in=[team.id for team in teams])
+
+    moved = list(qs)
+    for team in moved:
+        team.supervisors.remove(from_user)
+        team.supervisors.add(to_user)
+    return moved
 
 
 def get_machine_break_status(machine: Machine, current_dt: datetime = None):

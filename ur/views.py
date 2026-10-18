@@ -12,22 +12,25 @@ from rest_framework.decorators import action
 from rest_framework.pagination import PageNumberPagination
 from django_filters import rest_framework as filters
 from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework.exceptions import PermissionDenied
 
 from django.contrib.auth.models import Group
 from .models import (Breakdown, AdditionalEndingBreakdownInfo, BreakdownMove, Machine, ClosingBreakdownTypes, ResponsibleForBreakdown, Workshop, Department, WorkshopParticipant,
-                     MachineNotes, MachineNoteFile, CurrentWorkshop, CurrentDepartment, WorkSchedulePreset, ScheduleBreak, MachineLineName)
+                     MachineNotes, MachineNoteFile, CurrentWorkshop, CurrentDepartment, WorkSchedulePreset, ScheduleBreak, MachineLineName, ProductionTeam)
 from .serializers import (BreakdownListSerializer, BreakdownCreateSerializer, BreakdownMovePostSerializer, MachineMainSerializer, EndBreakdownSerializer, WorkshopSerializer,
                           MachineFullListSerializer, ClosingBreakdownTypesSerializer, MachineSerializer, BreakdownListSerializerFullHistory, ResponsibleForBreakdownSerializer,
                           FullBreakdownHistorySerializer, DepartmentSerializer, BreakdownMoveToHistorySerializer, BreakdownOptionsResponseSerializer, BreakdownMoveOptionResponseSerializer,
                           EndBreakdownOptionsSerializer, WorkshopParticipantSerializer, DepartmentParticipantSerializer, UserSerializer, MachineNotesSerializer, URProfilePanelSerializer, DepartmentToggleSerializer,
-                          WorkSchedulePresetSerializer, ScheduleBreakSerializer, MachineSetScheduleSerializer, MachineLineNameSerializer)
-from .services import create_breakdown_with_initial_move, MoveBreakdownService, EndBreakdownService, get_machine_break_status
+                          WorkSchedulePresetSerializer, ScheduleBreakSerializer, MachineSetScheduleSerializer, MachineLineNameSerializer, ProductionWorkerSerializer,
+                          ProductionTeamSerializer, ProductionTeamTransferSerializer)
+from .services import (create_breakdown_with_initial_move, MoveBreakdownService, EndBreakdownService, get_machine_break_status,
+                       production_workers_visible_to, transfer_production_teams)
 from .filters import BreakdownFilter, BreakdownMoveFilter
 from .mixins import WorkshopContextMixin, CurrentWorkshopMixin, CurrentDepartmentsMixin
 from .permissions import IsURAdminOrOwnerOrReadOnlyParticipant
 
 from user.models import CustomUser
-from user.permissions import IsProductionSupervisorOrAdmin
+from user.permissions import IsProductionSupervisorOrAdmin, is_production_admin, is_quality_user
 
 
 class CustomPagination(PageNumberPagination):
@@ -268,8 +271,15 @@ class BreakdownListViewToReport(CurrentWorkshopMixin, ListAPIView):
             return None
         return super().paginate_queryset(queryset)
 
+    def get_workshop_or_department_scope(self):
+        user = self.request.user
+        if self.get_workshop() is None and is_quality_user(user):
+            dept_ids = list(user.currentdepartments.values_list('department_id', flat=True))
+            return Breakdown.objects.filter(machine__department_id__in=dept_ids)
+        return super().get_queryset()
+
     def get_queryset(self):
-        qs = super().get_queryset()
+        qs = self.get_workshop_or_department_scope()
 
         return (qs
                 .select_related('machine', 'machine__line', 'reporter')
@@ -347,19 +357,32 @@ class BreakdownOptionsView(CurrentWorkshopMixin, GenericAPIView):
     def get(self, request):
         workshop = self.get_workshop()
 
-        if not workshop:
+        if workshop:
+            machines = Machine.objects.filter(workshop=workshop).values('id', 'name')
+            # Tylko linie, które mają maszyny w bieżącym warsztacie
+            # (related_name na Machine.line to 'lines'; jeśli zmienisz na 'machines', popraw lookup)
+            lines = (MachineLineName.objects
+                     .filter(lines__workshop=workshop)
+                     .distinct()
+                     .order_by('name')
+                     .values('id', 'name'))
+            responsibles = ResponsibleForBreakdown.objects.filter(workshop=workshop).values('id', 'name')
+            close_types = ClosingBreakdownTypes.objects.filter(workshop=workshop).values('id', 'name')
+        elif is_quality_user(request.user):
+            # Quality Worker: maszyny z aktualnych departamentów i słowniki warsztatów tych maszyn
+            dept_ids = list(request.user.currentdepartments.values_list('department_id', flat=True))
+            dept_machines = Machine.objects.filter(department_id__in=dept_ids)
+            workshop_ids = dept_machines.exclude(workshop__isnull=True).values_list('workshop_id', flat=True)
+            machines = dept_machines.values('id', 'name')
+            lines = (MachineLineName.objects
+                     .filter(lines__department_id__in=dept_ids)
+                     .distinct()
+                     .order_by('name')
+                     .values('id', 'name'))
+            responsibles = ResponsibleForBreakdown.objects.filter(workshop_id__in=workshop_ids).values('id', 'name')
+            close_types = ClosingBreakdownTypes.objects.filter(workshop_id__in=workshop_ids).values('id', 'name')
+        else:
             return Response({"error": "Workshop not found"}, status=status.HTTP_404_NOT_FOUND)
-
-        machines = Machine.objects.filter(workshop=workshop).values('id', 'name')
-        # Tylko linie, które mają maszyny w bieżącym warsztacie
-        # (related_name na Machine.line to 'lines'; jeśli zmienisz na 'machines', popraw lookup)
-        lines = (MachineLineName.objects
-                 .filter(lines__workshop=workshop)
-                 .distinct()
-                 .order_by('name')
-                 .values('id', 'name'))
-        responsibles = ResponsibleForBreakdown.objects.filter(workshop=workshop).values('id', 'name')
-        close_types = ClosingBreakdownTypes.objects.filter(workshop=workshop).values('id', 'name')
 
         priorities = [{"value": k, "label": v} for k, v in Breakdown.Priority.choices]
         statuses = [{"value": k, "label": v} for k, v in BreakdownMove.Status.choices]
@@ -477,15 +500,14 @@ class DepartmentParticipantViewset(viewsets.ModelViewSet):
 
 
 class ProductionWorkerViewSet(viewsets.ModelViewSet):
-    serializer_class = UserSerializer
+    serializer_class = ProductionWorkerSerializer
     permission_classes = [IsProductionSupervisorOrAdmin]
 
     def get_queryset(self):
+        # Supervisor widzi (i może usuwać) tylko pracowników swoich zespołów oraz nieprzypisanych
         return (
-            CustomUser.objects.filter(groups__name='ur_production')
-            .exclude(groups__name__in=['ur_admin', 'ur_owner', 'ur_production_supervisor', 'ur_supervisor', 'ur_worker', 'ur_cordinator'])
-            .exclude(is_superuser=True)
-            .distinct()
+            production_workers_visible_to(self.request.user)
+            .prefetch_related('production_teams')
             .order_by('-id')
         )
 
@@ -493,6 +515,74 @@ class ProductionWorkerViewSet(viewsets.ModelViewSet):
         user = self.get_object()
         user.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class ProductionTeamViewSet(viewsets.ModelViewSet):
+    serializer_class = ProductionTeamSerializer
+    permission_classes = [IsProductionSupervisorOrAdmin]
+
+    def get_queryset(self):
+        qs = ProductionTeam.objects.prefetch_related('supervisors', 'members')
+        if is_production_admin(self.request.user):
+            return qs
+        return qs.filter(supervisors=self.request.user)
+
+    def _require_admin(self):
+        if not is_production_admin(self.request.user):
+            raise PermissionDenied("Tylko administrator może zarządzać zespołami.")
+
+    def perform_create(self, serializer):
+        self._require_admin()
+        serializer.save()
+
+    def perform_update(self, serializer):
+        user = self.request.user
+        if not is_production_admin(user):
+            # Supervisor może zmieniać wyłącznie skład swojego zespołu
+            if set(self.request.data.keys()) - {'member_ids'}:
+                raise PermissionDenied("Supervisor może zmieniać tylko skład swojego zespołu.")
+
+            # ...i dodawać tylko osoby, które widzi (ze swoich zespołów lub nieprzypisane)
+            allowed_ids = set(production_workers_visible_to(user).values_list('id', flat=True))
+            current_ids = set(serializer.instance.members.values_list('id', flat=True))
+            requested_ids = {member.id for member in serializer.validated_data.get('members', [])}
+            if requested_ids - current_ids - allowed_ids:
+                raise PermissionDenied("Nie możesz dodać pracownika przypisanego do zespołu innego supervisora.")
+
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        self._require_admin()
+        instance.delete()
+
+    @action(detail=False, methods=['get'], serializer_class=UserSerializer)
+    def supervisors(self, request):
+        self._require_admin()
+        qs = (
+            CustomUser.objects.filter(groups__name='ur_production_supervisor')
+            .distinct()
+            .order_by('last_name', 'first_name')
+        )
+        return Response(UserSerializer(qs, many=True).data)
+
+    @action(detail=False, methods=['post'], serializer_class=ProductionTeamTransferSerializer)
+    def transfer(self, request):
+        self._require_admin()
+        serializer = ProductionTeamTransferSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        moved = transfer_production_teams(
+            from_user=serializer.validated_data['from_user'],
+            to_user=serializer.validated_data['to_user'],
+            teams=serializer.validated_data.get('teams'),
+        )
+        return Response(
+            {
+                "detail": f"Przekazano zespoły: {len(moved)}",
+                "moved_team_ids": [team.id for team in moved],
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class MachineNotesViewSet(viewsets.ModelViewSet):
