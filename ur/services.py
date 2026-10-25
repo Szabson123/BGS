@@ -3,7 +3,8 @@ from django.utils import timezone
 from django.db import transaction
 from django.db.models import Q
 
-from .models import Breakdown, BreakdownMove, WorkshopParticipant, AdditionalEndingBreakdownInfo, Machine, WorkSchedulePreset, ScheduleBreak, ProductionTeam
+from .models import (Breakdown, BreakdownMove, WorkshopParticipant, AdditionalEndingBreakdownInfo, Machine, WorkSchedulePreset,
+                     ScheduleBreak, ProductionTeam, CancelledBreakdownSnapshot)
 from rest_framework.exceptions import ValidationError
 from user.models import CustomUser
 from user.permissions import is_production_admin
@@ -29,6 +30,68 @@ def production_workers_visible_to(user):
     return qs.filter(
         Q(production_teams__supervisors=user) | Q(production_teams__isnull=True)
     ).distinct()
+
+
+def can_manage_reported_breakdown(user, breakdown) -> bool:
+    """Anulować zgłoszenie i dopisywać do opisu może zgłaszający, mistrz produkcji, koordynator lub administrator."""
+    if not user or not user.is_authenticated:
+        return False
+    if breakdown.reporter_id == user.id or is_production_admin(user):
+        return True
+    return user.groups.filter(name__in=['ur_production_supervisor', 'ur_cordinator']).exists()
+
+
+@transaction.atomic
+def cancel_breakdown(breakdown_id, user):
+    """Usuwa jeszcze nierozpoczętą awarię i zapisuje jej snapshot."""
+    breakdown = Breakdown.objects.select_for_update().select_related('machine').get(pk=breakdown_id)
+
+    if breakdown.history.exclude(status=BreakdownMove.Status.REPORTED).exists():
+        raise ValidationError("Nie można anulować awarii, której naprawa została już rozpoczęta.")
+
+    history = [
+        {
+            "status": move.status,
+            "user_id": move.user_id,
+            "description": move.description,
+            "created_at": move.created_at.isoformat(),
+        }
+        for move in breakdown.history.order_by('created_at')
+    ]
+    snapshot = CancelledBreakdownSnapshot.objects.create(
+        original_breakdown_id=breakdown.id,
+        machine=breakdown.machine,
+        machine_name=breakdown.machine.name,
+        reporter=breakdown.reporter,
+        priority=breakdown.priority,
+        description=breakdown.description,
+        reported_at=breakdown.created_at,
+        cancelled_by=user,
+        history=history,
+    )
+    breakdown.delete()
+    return snapshot
+
+
+@transaction.atomic
+def append_breakdown_description(breakdown_id, text):
+    """Dopisuje tekst do opisu usterki w nowej linii – bez możliwości edycji wcześniejszej treści."""
+    breakdown = Breakdown.objects.select_for_update().get(pk=breakdown_id)
+    addition = (text or '').strip()
+
+    if not addition:
+        raise ValidationError("Wpisz treść do dopisania.")
+    if breakdown.history.filter(status=BreakdownMove.Status.ENDED).exists():
+        raise ValidationError("Nie można dopisywać do zakończonej awarii.")
+
+    current = (breakdown.description or '').rstrip()
+    new_description = f"{current}\n{addition}" if current else addition
+    if len(new_description) > Breakdown.DESCRIPTION_MAX_LENGTH:
+        raise ValidationError(f"Opis usterki może mieć maksymalnie {Breakdown.DESCRIPTION_MAX_LENGTH} znaków.")
+
+    breakdown.description = new_description
+    breakdown.save(update_fields=['description', 'updated_at'])
+    return breakdown
 
 
 @transaction.atomic

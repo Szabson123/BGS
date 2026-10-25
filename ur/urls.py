@@ -29,6 +29,8 @@ urlpatterns = [
     path('end/breakdown/', BreakdownMakeEndedMove.as_view(), name='end-break-down'),
     path('breakdowns/<int:breakdown_id>/update-notes/', BreakdownUpdateNotesView.as_view(), name='breakdown-update-notes'),
     path('update-notes/breakdown/', BreakdownUpdateNotesView.as_view(), name='breakdown-update-notes-body'),
+    path('breakdowns/<int:breakdown_id>/cancel/', BreakdownCancelView.as_view(), name='breakdown-cancel'),
+    path('breakdowns/<int:breakdown_id>/append-description/', BreakdownAppendDescriptionView.as_view(), name='breakdown-append-description'),
 
     path('machines-to-current-workshop/', MachinesInCurrentWorkshop.as_view(), name='machines-to-current-workshop'),
     path('machines-to-current-departments/', MachinesInCurrentDepartments.as_view(), name='machines-to-current-departments'),

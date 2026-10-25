@@ -7,7 +7,8 @@ from rest_framework import status
 from user.models import CustomUser
 from django.contrib.auth.models import Group
 from .models import (Workshop, Machine, Department, WorkSchedulePreset, ScheduleBreak, ProductionTeam,
-                     CurrentDepartment, CurrentWorkshop, Breakdown, ResponsibleForBreakdown)
+                     CurrentDepartment, CurrentWorkshop, Breakdown, ResponsibleForBreakdown, BreakdownMove,
+                     CancelledBreakdownSnapshot)
 from .services import get_machine_break_status
 
 
@@ -603,3 +604,123 @@ class ProductionWorkerReportTests(TestCase):
         self.client.force_authenticate(ur_supervisor)
         res = self.client.get('/api/ur/all-breakdowns-to-report/?no_pagination=true')
         self.assertEqual({b['id'] for b in res.json()}, {self.bd_in_a.id, self.bd_out_a.id})
+
+
+class BreakdownCancelAndAppendTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        sup_group, _ = Group.objects.get_or_create(name='ur_production_supervisor')
+        prod_group, _ = Group.objects.get_or_create(name='ur_production')
+
+        self.reporter = CustomUser.objects.create_user(username='reporter', password='x', is_active=True)
+        self.reporter.groups.add(prod_group)
+        self.other = CustomUser.objects.create_user(username='other', password='x', is_active=True)
+        self.other.groups.add(prod_group)
+        self.supervisor = CustomUser.objects.create_user(username='supervisor', password='x', is_active=True)
+        self.supervisor.groups.add(sup_group)
+
+        self.machine = Machine.objects.create(name='Prasa P1')
+        self.breakdown = Breakdown.objects.create(
+            machine=self.machine, reporter=self.reporter, priority='HIGH', description='Wyciek oleju'
+        )
+        BreakdownMove.objects.create(breakdown=self.breakdown, status=BreakdownMove.Status.REPORTED, user=self.reporter)
+
+    def _cancel(self, user):
+        self.client.force_authenticate(user)
+        return self.client.post(f'/api/ur/breakdowns/{self.breakdown.id}/cancel/', {}, format='json')
+
+    def _append(self, user, text):
+        self.client.force_authenticate(user)
+        return self.client.post(
+            f'/api/ur/breakdowns/{self.breakdown.id}/append-description/', {'text': text}, format='json'
+        )
+
+    def test_reporter_cancels_and_snapshot_is_kept(self):
+        breakdown_id = self.breakdown.id
+        res = self._cancel(self.reporter)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertFalse(Breakdown.objects.filter(id=breakdown_id).exists())
+
+        snapshot = CancelledBreakdownSnapshot.objects.get(original_breakdown_id=breakdown_id)
+        self.assertEqual(snapshot.machine, self.machine)
+        self.assertEqual(snapshot.machine_name, 'Prasa P1')
+        self.assertEqual(snapshot.reporter, self.reporter)
+        self.assertEqual(snapshot.cancelled_by, self.reporter)
+        self.assertEqual(snapshot.description, 'Wyciek oleju')
+        self.assertEqual(snapshot.priority, 'HIGH')
+        self.assertEqual([m['status'] for m in snapshot.history], ['RP'])
+
+    def test_production_supervisor_can_cancel(self):
+        res = self._cancel(self.supervisor)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(CancelledBreakdownSnapshot.objects.get().cancelled_by, self.supervisor)
+
+    def test_other_user_cannot_cancel(self):
+        res = self._cancel(self.other)
+        self.assertEqual(res.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertTrue(Breakdown.objects.filter(id=self.breakdown.id).exists())
+        self.assertFalse(CancelledBreakdownSnapshot.objects.exists())
+
+    def test_started_breakdown_cannot_be_cancelled(self):
+        BreakdownMove.objects.create(breakdown=self.breakdown, status=BreakdownMove.Status.STARTED, user=self.other)
+        res = self._cancel(self.reporter)
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertTrue(Breakdown.objects.filter(id=self.breakdown.id).exists())
+        self.assertFalse(CancelledBreakdownSnapshot.objects.exists())
+
+    def test_append_adds_new_line_without_editing(self):
+        res = self._append(self.reporter, '  Kapie też na podłogę  ')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        res = self._append(self.supervisor, 'Maszyna zatrzymana')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+        self.breakdown.refresh_from_db()
+        self.assertEqual(self.breakdown.description, 'Wyciek oleju\nKapie też na podłogę\nMaszyna zatrzymana')
+
+    def test_append_rules(self):
+        self.assertEqual(self._append(self.other, 'x').status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(self._append(self.reporter, '   ').status_code, status.HTTP_400_BAD_REQUEST)
+
+        BreakdownMove.objects.create(breakdown=self.breakdown, status=BreakdownMove.Status.ENDED, user=self.other)
+        self.assertEqual(self._append(self.reporter, 'za późno').status_code, status.HTTP_400_BAD_REQUEST)
+
+        self.breakdown.refresh_from_db()
+        self.assertEqual(self.breakdown.description, 'Wyciek oleju')
+
+    def test_append_allowed_while_in_repair(self):
+        BreakdownMove.objects.create(breakdown=self.breakdown, status=BreakdownMove.Status.STARTED, user=self.other)
+        self.assertEqual(self._append(self.reporter, 'Dodatkowa informacja').status_code, status.HTTP_200_OK)
+
+
+class RepairNotesAndCoordinatorTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.technician = CustomUser.objects.create_user(username='tech', password='x', is_active=True)
+        self.machine = Machine.objects.create(name='Prasa P2')
+        self.breakdown = Breakdown.objects.create(machine=self.machine, description='Brak ciśnienia')
+        self.move = BreakdownMove.objects.create(
+            breakdown=self.breakdown, status=BreakdownMove.Status.STARTED, user=self.technician, description='Wymiana zaworu'
+        )
+        self.client.force_authenticate(self.technician)
+
+    def test_technician_edits_notes_and_line_breaks_are_kept(self):
+        res = self.client.post(
+            f'/api/ur/breakdowns/{self.breakdown.id}/update-notes/',
+            {'description': 'Wymiana zaworu\nTest szczelności OK'},
+            format='json',
+        )
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.move.refresh_from_db()
+        self.assertEqual(self.move.description, 'Wymiana zaworu\nTest szczelności OK')
+
+    def test_coordinator_can_cancel_reported_breakdown(self):
+        coord_group, _ = Group.objects.get_or_create(name='ur_cordinator')
+        coordinator = CustomUser.objects.create_user(username='coord', password='x', is_active=True)
+        coordinator.groups.add(coord_group)
+        reported = Breakdown.objects.create(machine=self.machine, description='Nowa awaria')
+        BreakdownMove.objects.create(breakdown=reported, status=BreakdownMove.Status.REPORTED)
+
+        self.client.force_authenticate(coordinator)
+        res = self.client.post(f'/api/ur/breakdowns/{reported.id}/cancel/', {}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertFalse(Breakdown.objects.filter(id=reported.id).exists())

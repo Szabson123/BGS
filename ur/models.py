@@ -177,10 +177,12 @@ class Breakdown(BaseModel):
         MID = 'MID', 'Średni'
         HIGH = 'HIGH', 'Wysoki'
 
+    DESCRIPTION_MAX_LENGTH = 4000
+
     machine = models.ForeignKey(Machine, on_delete=models.CASCADE, related_name='breakdowns')
     priority = models.CharField(max_length=4, choices=Priority, default=Priority.NONE)
     reporter = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='breakdowns')
-    description = models.CharField(max_length=1024, null=True, blank=True)
+    description = models.CharField(max_length=DESCRIPTION_MAX_LENGTH, null=True, blank=True)
     objects = BreakdownQuerySet.as_manager()
 
     class Meta:
@@ -191,6 +193,26 @@ class Breakdown(BaseModel):
     def __str__(self):
         return f"{self.machine.name} {self.created_at}"
     
+
+# Komentarz -> anulowana awaria znika z systemu, a jej stan z chwili anulowania zostaje tutaj
+
+class CancelledBreakdownSnapshot(BaseModel):
+    original_breakdown_id = models.PositiveIntegerField()
+    machine = models.ForeignKey(Machine, on_delete=models.SET_NULL, null=True, blank=True, related_name='cancelled_breakdowns')
+    machine_name = models.CharField(max_length=255)
+    reporter = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='reported_cancelled_breakdowns')
+    priority = models.CharField(max_length=4)
+    description = models.TextField(null=True, blank=True)
+    reported_at = models.DateTimeField()
+    cancelled_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='cancelled_breakdowns')
+    history = models.JSONField(default=list, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Anulowana #{self.original_breakdown_id} – {self.machine_name}"
+
 
 class AdditionalEndingBreakdownInfo(BaseModel):
     breakdown = models.OneToOneField(Breakdown, on_delete=models.CASCADE, related_name='additional')
@@ -204,10 +226,12 @@ class BreakdownMove(BaseModel):
         STARTED = 'ST', 'W Naprawie'
         ENDED = 'ED', 'Zakończony'
 
+    DESCRIPTION_MAX_LENGTH = 4000
+
     breakdown = models.ForeignKey(Breakdown, on_delete=models.CASCADE, related_name='history')
     user = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True)
     status = models.CharField(max_length=2, choices=Status)
-    description = models.CharField(max_length=1024, null=True, blank=True)
+    description = models.CharField(max_length=DESCRIPTION_MAX_LENGTH, null=True, blank=True)
 
     class Meta:
         ordering = ['-created_at']

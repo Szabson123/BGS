@@ -24,7 +24,8 @@ from .serializers import (BreakdownListSerializer, BreakdownCreateSerializer, Br
                           WorkSchedulePresetSerializer, ScheduleBreakSerializer, MachineSetScheduleSerializer, MachineLineNameSerializer, ProductionWorkerSerializer,
                           ProductionTeamSerializer, ProductionTeamTransferSerializer)
 from .services import (create_breakdown_with_initial_move, MoveBreakdownService, EndBreakdownService, get_machine_break_status,
-                       production_workers_visible_to, transfer_production_teams)
+                       production_workers_visible_to, transfer_production_teams, can_manage_reported_breakdown,
+                       cancel_breakdown, append_breakdown_description)
 from .filters import BreakdownFilter, BreakdownMoveFilter
 from .mixins import WorkshopContextMixin, CurrentWorkshopMixin, CurrentDepartmentsMixin
 from .permissions import IsURAdminOrOwnerOrReadOnlyParticipant
@@ -262,6 +263,33 @@ class BreakdownUpdateNotesView(GenericAPIView):
             )
 
         return Response({"detail": "success", "description": description}, status=status.HTTP_200_OK)
+
+
+class BreakdownCancelView(GenericAPIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, breakdown_id):
+        breakdown = get_object_or_404(Breakdown, pk=breakdown_id)
+        if not can_manage_reported_breakdown(request.user, breakdown):
+            raise PermissionDenied("Awarię może anulować tylko zgłaszający lub mistrz produkcji.")
+
+        snapshot = cancel_breakdown(breakdown_id, request.user)
+        return Response(
+            {"detail": "Zgłoszenie zostało anulowane.", "snapshot_id": snapshot.id},
+            status=status.HTTP_200_OK,
+        )
+
+
+class BreakdownAppendDescriptionView(GenericAPIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, breakdown_id):
+        breakdown = get_object_or_404(Breakdown, pk=breakdown_id)
+        if not can_manage_reported_breakdown(request.user, breakdown):
+            raise PermissionDenied("Do opisu może dopisywać tylko zgłaszający lub mistrz produkcji.")
+
+        updated = append_breakdown_description(breakdown_id, request.data.get('text'))
+        return Response({"detail": "Dopisano do opisu.", "description": updated.description}, status=status.HTTP_200_OK)
 
 
 class BreakdownListViewToReport(CurrentWorkshopMixin, ListAPIView):
