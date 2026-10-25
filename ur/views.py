@@ -30,7 +30,14 @@ from .mixins import WorkshopContextMixin, CurrentWorkshopMixin, CurrentDepartmen
 from .permissions import IsURAdminOrOwnerOrReadOnlyParticipant
 
 from user.models import CustomUser
-from user.permissions import IsProductionSupervisorOrAdmin, is_production_admin, is_quality_user
+from user.permissions import IsProductionSupervisorOrAdmin, is_production_admin, is_quality_user, uses_department_scope
+
+
+def report_department_ids(user, workshop):
+    """Departamenty, po których filtrujemy raport awarii; None = zakres warsztatu UR."""
+    if uses_department_scope(user) or (workshop is None and is_quality_user(user)):
+        return list(user.currentdepartments.values_list('department_id', flat=True))
+    return None
 
 
 class CustomPagination(PageNumberPagination):
@@ -272,9 +279,9 @@ class BreakdownListViewToReport(CurrentWorkshopMixin, ListAPIView):
         return super().paginate_queryset(queryset)
 
     def get_workshop_or_department_scope(self):
-        user = self.request.user
-        if self.get_workshop() is None and is_quality_user(user):
-            dept_ids = list(user.currentdepartments.values_list('department_id', flat=True))
+        # Produkcja i Quality: awarie maszyn z aktualnych departamentów (wybór w profilu)
+        dept_ids = report_department_ids(self.request.user, self.get_workshop())
+        if dept_ids is not None:
             return Breakdown.objects.filter(machine__department_id__in=dept_ids)
         return super().get_queryset()
 
@@ -356,8 +363,9 @@ class BreakdownOptionsView(CurrentWorkshopMixin, GenericAPIView):
 
     def get(self, request):
         workshop = self.get_workshop()
+        dept_ids = report_department_ids(request.user, workshop)
 
-        if workshop:
+        if dept_ids is None and workshop:
             machines = Machine.objects.filter(workshop=workshop).values('id', 'name')
             # Tylko linie, które mają maszyny w bieżącym warsztacie
             # (related_name na Machine.line to 'lines'; jeśli zmienisz na 'machines', popraw lookup)
@@ -368,9 +376,8 @@ class BreakdownOptionsView(CurrentWorkshopMixin, GenericAPIView):
                      .values('id', 'name'))
             responsibles = ResponsibleForBreakdown.objects.filter(workshop=workshop).values('id', 'name')
             close_types = ClosingBreakdownTypes.objects.filter(workshop=workshop).values('id', 'name')
-        elif is_quality_user(request.user):
-            # Quality Worker: maszyny z aktualnych departamentów i słowniki warsztatów tych maszyn
-            dept_ids = list(request.user.currentdepartments.values_list('department_id', flat=True))
+        elif dept_ids is not None:
+            # Produkcja / Quality: maszyny z aktualnych departamentów i słowniki warsztatów tych maszyn
             dept_machines = Machine.objects.filter(department_id__in=dept_ids)
             workshop_ids = dept_machines.exclude(workshop__isnull=True).values_list('workshop_id', flat=True)
             machines = dept_machines.values('id', 'name')

@@ -7,7 +7,7 @@ from rest_framework import status
 from user.models import CustomUser
 from django.contrib.auth.models import Group
 from .models import (Workshop, Machine, Department, WorkSchedulePreset, ScheduleBreak, ProductionTeam,
-                     CurrentDepartment, Breakdown, ResponsibleForBreakdown)
+                     CurrentDepartment, CurrentWorkshop, Breakdown, ResponsibleForBreakdown)
 from .services import get_machine_break_status
 
 
@@ -534,3 +534,72 @@ class QualityWorkerReportTests(TestCase):
         self.assertEqual(self._report_ids(), set())
         res = self.client.get('/api/ur/breakdown/raport/options/')
         self.assertEqual(res.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class ProductionWorkerReportTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        prod_group, _ = Group.objects.get_or_create(name='ur_production')
+
+        self.worker = CustomUser.objects.create_user(username='prod', password='x', is_active=True)
+        self.worker.groups.add(prod_group)
+
+        self.workshop_a = Workshop.objects.create(name='Warsztat A')
+        self.workshop_b = Workshop.objects.create(name='Warsztat B')
+        self.dept_in = Department.objects.create(name='Montaż')
+        self.dept_out = Department.objects.create(name='Lakiernia')
+        CurrentDepartment.objects.create(user=self.worker, department=self.dept_in)
+        # Pracownik ma też warsztat – raport ma mimo to iść za departamentem
+        CurrentWorkshop.objects.create(user=self.worker, workshop=self.workshop_a)
+
+        self.machine_in_a = Machine.objects.create(name='M1', workshop=self.workshop_a, department=self.dept_in)
+        self.machine_in_b = Machine.objects.create(name='M2', workshop=self.workshop_b, department=self.dept_in)
+        self.machine_out_a = Machine.objects.create(name='M3', workshop=self.workshop_a, department=self.dept_out)
+
+        self.bd_in_a = Breakdown.objects.create(machine=self.machine_in_a)
+        self.bd_in_b = Breakdown.objects.create(machine=self.machine_in_b)
+        self.bd_out_a = Breakdown.objects.create(machine=self.machine_out_a)
+
+    def test_production_report_follows_departments_not_workshop(self):
+        self.client.force_authenticate(self.worker)
+        res = self.client.get('/api/ur/all-breakdowns-to-report/?no_pagination=true')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual({b['id'] for b in res.json()}, {self.bd_in_a.id, self.bd_in_b.id})
+
+    def test_production_report_options_follow_departments(self):
+        self.client.force_authenticate(self.worker)
+        res = self.client.get('/api/ur/breakdown/raport/options/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual({m['id'] for m in res.json()['machines']}, {self.machine_in_a.id, self.machine_in_b.id})
+
+    def test_ur_worker_with_production_role_keeps_workshop_scope(self):
+        ur_group, _ = Group.objects.get_or_create(name='ur_worker')
+        self.worker.groups.add(ur_group)
+        self.client.force_authenticate(self.worker)
+        res = self.client.get('/api/ur/all-breakdowns-to-report/?no_pagination=true')
+        self.assertEqual({b['id'] for b in res.json()}, {self.bd_in_a.id, self.bd_out_a.id})
+
+    def test_production_supervisor_report_follows_departments(self):
+        sup_group, _ = Group.objects.get_or_create(name='ur_production_supervisor')
+        supervisor = CustomUser.objects.create_user(username='prod_sup', password='x', is_active=True)
+        supervisor.groups.add(sup_group)
+        CurrentDepartment.objects.create(user=supervisor, department=self.dept_in)
+        CurrentWorkshop.objects.create(user=supervisor, workshop=self.workshop_a)
+
+        self.client.force_authenticate(supervisor)
+        res = self.client.get('/api/ur/all-breakdowns-to-report/?no_pagination=true')
+        self.assertEqual({b['id'] for b in res.json()}, {self.bd_in_a.id, self.bd_in_b.id})
+
+        res = self.client.get('/api/ur/breakdown/raport/options/')
+        self.assertEqual({m['id'] for m in res.json()['machines']}, {self.machine_in_a.id, self.machine_in_b.id})
+
+    def test_ur_supervisor_keeps_workshop_scope(self):
+        ur_sup_group, _ = Group.objects.get_or_create(name='ur_supervisor')
+        ur_supervisor = CustomUser.objects.create_user(username='ur_sup', password='x', is_active=True)
+        ur_supervisor.groups.add(ur_sup_group)
+        CurrentDepartment.objects.create(user=ur_supervisor, department=self.dept_in)
+        CurrentWorkshop.objects.create(user=ur_supervisor, workshop=self.workshop_a)
+
+        self.client.force_authenticate(ur_supervisor)
+        res = self.client.get('/api/ur/all-breakdowns-to-report/?no_pagination=true')
+        self.assertEqual({b['id'] for b in res.json()}, {self.bd_in_a.id, self.bd_out_a.id})
