@@ -119,6 +119,11 @@ class Machine(BaseModel):
         return self.name
 
 
+class MachineModel(BaseModel):
+    name = models.CharField(max_length=255)
+    machine = models.OneToOneField(Machine, on_delete=models.SET_NULL, null=True, blank=True)
+
+
 class WorkSchedulePreset(BaseModel):
     machine = models.ForeignKey(Machine, on_delete=models.CASCADE, null=True, blank=True, related_name='schedules')
     name = models.CharField(max_length=255)
