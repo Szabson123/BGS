@@ -87,6 +87,9 @@ class CurrentDepartment(BaseModel):
 class MachineLineName(BaseModel):
     name = models.CharField(max_length=255)
 
+    def __str__(self):
+        return self.name
+
 
 # Komentarz -> zespół to stała jednostka między supervisorem a pracownikami produkcji.
 # Supervisor widzi pracowników ze swoich zespołów; gdy odchodzi, przekazuje się jego zespoły innej osobie.
@@ -122,6 +125,9 @@ class Machine(BaseModel):
 class MachineModel(BaseModel):
     name = models.CharField(max_length=255)
     machine = models.OneToOneField(Machine, on_delete=models.SET_NULL, null=True, blank=True)
+
+    def __str__(self):
+        return self.name
 
 
 class WorkSchedulePreset(BaseModel):
