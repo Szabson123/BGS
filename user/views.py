@@ -1,6 +1,5 @@
 from django.contrib.auth import authenticate, login, logout
 from django.middleware.csrf import get_token
-from django.db.models import prefetch_related_objects
 from django.views.decorators.cache import never_cache
 from django.utils.decorators import method_decorator
 
@@ -15,8 +14,10 @@ from .serializers import (
     CreateUserByAdminSerializer,
     CreateProductionUserSerializer,
     FirstPasswordSetSerializer,
-    ResetUserPasswordSerializer
+    ResetUserPasswordSerializer,
+    MainPageSerializer,
 )
+from .services import build_auth_user_payload
 
 from rest_framework.authentication import BasicAuthentication, SessionAuthentication
 
@@ -43,20 +44,7 @@ class LoginAPIView(APIView):
 
         login(request, user)
 
-        prefetch_related_objects([user], 'groups')
-
-        groups_list = list(user.groups.values_list('name', flat=True))
-
-        return Response({
-            "id": user.id,
-            "username": user.username,
-            "email": user.email,
-            "first_name": user.first_name,
-            "last_name": user.last_name,
-            "main_page": user.main_page,
-            "groups": groups_list,
-            "is_superuser": user.is_superuser,
-        })
+        return Response(build_auth_user_payload(user))
 
 
 class LogoutAPIView(APIView):
@@ -75,24 +63,25 @@ class MeAPIView(APIView):
         user = request.user
         user.refresh_from_db()
 
-        prefetch_related_objects([user], 'groups')
-
-        groups_list = list(user.groups.values_list('name', flat=True))
-
-        response = Response({
-            "id": user.id,
-            "username": user.username,
-            "email": user.email,
-            "first_name": user.first_name,
-            "last_name": user.last_name,
-            "main_page": user.main_page,
-            "groups": groups_list,
-            "is_superuser": user.is_superuser,
-        })
+        response = Response(build_auth_user_payload(user))
         response["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0"
         response["Pragma"] = "no-cache"
         response["Expires"] = "0"
         return response
+
+
+class MainPageAPIView(APIView):
+    """Użytkownik sam wybiera moduł startowy spośród modułów, do których ma dostęp."""
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request):
+        serializer = MainPageSerializer(data=request.data, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+
+        request.user.main_page = serializer.validated_data['main_page']
+        request.user.save(update_fields=['main_page'])
+
+        return Response(build_auth_user_payload(request.user))
 
 
 class CsrfAPIView(APIView):

@@ -7,8 +7,19 @@ from rest_framework import serializers
 
 from ur.models import Workshop, CurrentWorkshop, WorkshopParticipant, Department, CurrentDepartment, ProductionTeam
 from .permissions import is_production_admin
+from .modules import MODULE_CHOICES, get_user_modules
 
 User = get_user_model()
+
+
+class MainPageSerializer(serializers.Serializer):
+    main_page = serializers.ChoiceField(choices=MODULE_CHOICES)
+
+    def validate_main_page(self, value):
+        user = self.context['request'].user
+        if value not in get_user_modules(user):
+            raise serializers.ValidationError("Nie masz dostępu do tego modułu.")
+        return value
 
 
 class CreateUserByAdminSerializer(serializers.ModelSerializer):

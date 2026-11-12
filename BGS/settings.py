@@ -29,6 +29,7 @@ INSTALLED_APPS = [
     'user',
     'ur',
     'operatorknowlage',
+    'doc',
 ]
 
 MIDDLEWARE = [
