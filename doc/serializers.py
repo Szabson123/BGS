@@ -121,12 +121,13 @@ class DocumentListSerializer(serializers.ModelSerializer):
     created_by_name = serializers.SerializerMethodField()
     latest_version = serializers.SerializerMethodField()
     current_version_number = serializers.SerializerMethodField()
+    approval_path = serializers.SerializerMethodField()
 
     class Meta:
         model = Document
         fields = [
             'id', 'number', 'title', 'family', 'operation', 'phase', 'factory', 'department',
-            'created_by_name', 'created_at', 'latest_version', 'current_version_number',
+            'created_by_name', 'created_at', 'latest_version', 'current_version_number', 'approval_path',
         ]
 
     def get_family(self, obj):
@@ -160,6 +161,14 @@ class DocumentListSerializer(serializers.ModelSerializer):
             'created_at': latest.created_at,
             'approval_steps': serialize_steps(latest),
         }
+
+    def get_approval_path(self, obj):
+        """Ścieżka akceptacji dokumentu (z najnowszej wersji, która ją ma) – niezmienna przy nowych wersjach."""
+        for version in self._versions(obj):
+            steps = list(version.approval_steps.all())
+            if steps:
+                return [step.section for step in sorted(steps, key=lambda s: (s.order, s.id))]
+        return []
 
     def get_current_version_number(self, obj):
         approved = [v for v in self._versions(obj) if v.status == DocumentVersion.Status.APPROVED]
@@ -257,14 +266,43 @@ class DocumentCreateSerializer(serializers.Serializer):
         return document
 
 
+def document_approval_path(document) -> list[str]:
+    """
+    Ścieżka akceptacji dokumentu – ustalona przy pierwszej wersji ze ścieżką i niezmienna dla kolejnych.
+    Pusta lista oznacza dokument sprzed wprowadzenia ścieżek (wtedy ścieżkę wybiera się raz, przy nowej wersji).
+    """
+    version = (
+        document.versions.filter(approval_steps__isnull=False).distinct().order_by('-version_number').first()
+    )
+    if not version:
+        return []
+    return list(version.approval_steps.order_by('order', 'id').values_list('section', flat=True))
+
+
 class DocumentVersionCreateSerializer(serializers.Serializer):
-    """Nowa wersja istniejącego dokumentu z własną ścieżką akceptacji."""
+    """Nowa wersja istniejącego dokumentu – ścieżka akceptacji przechodzi z poprzedniej wersji bez zmian."""
     file = serializers.FileField()
     change_description = serializers.CharField(required=False, allow_blank=True, default='')
-    approval_path = ApprovalPathField()
+    approval_path = ApprovalPathField(required=False)
 
     def validate(self, attrs):
-        _validate_has_no_pending(self.context['document'])
+        document = self.context['document']
+        _validate_has_no_pending(document)
+
+        locked_path = document_approval_path(document)
+        if locked_path:
+            sent_path = attrs.get('approval_path')
+            if sent_path is not None and sent_path != locked_path:
+                raise serializers.ValidationError(
+                    {'approval_path': 'Ścieżki akceptacji nie można zmienić przy nowej wersji dokumentu.'}
+                )
+            # Sekcja mogła w międzyczasie zostać bez ludzi – wtedy nikt nie zaakceptowałby wersji
+            ApprovalPathField().run_validation(locked_path)
+            attrs['approval_path'] = locked_path
+        elif 'approval_path' not in attrs:
+            raise serializers.ValidationError(
+                {'approval_path': 'Ten dokument nie ma jeszcze ścieżki akceptacji – wybierz ją.'}
+            )
         return attrs
 
     def create(self, validated_data):

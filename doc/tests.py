@@ -108,13 +108,36 @@ class DocApiTests(APITestCase):
         self.approve_all(document['versions'][0])
 
         self.client.force_authenticate(self.author)
+        # Ścieżki nie można zmienić przy nowej wersji
         response = self.client.post(f"/api/doc/documents/{document['id']}/versions/",
-                                    {'file': self.upload('v2.xlsx'), 'change_description': 'Poprawka',
-                                     'approval_path': '["doc_bhp"]'},
+                                    {'file': self.upload('v2.xlsx'), 'approval_path': '["doc_bhp"]'},
+                                    format='multipart')
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('nie można zmienić', response.json()['approval_path'][0])
+
+        # Bez ścieżki w żądaniu – przechodzi z poprzedniej wersji
+        response = self.client.post(f"/api/doc/documents/{document['id']}/versions/",
+                                    {'file': self.upload('v2.xlsx'), 'change_description': 'Poprawka'},
                                     format='multipart')
         self.assertEqual(response.status_code, 201, response.content)
-        self.assertEqual(response.json()['latest_version']['version_number'], 2)
-        self.assertEqual(response.json()['current_version_number'], 1)
+        body = response.json()
+        self.assertEqual(body['latest_version']['version_number'], 2)
+        self.assertEqual(body['current_version_number'], 1)
+        self.assertEqual(body['approval_path'], ['doc_quality', 'doc_bhp'])
+        self.assertEqual([s['section'] for s in body['latest_version']['approval_steps']], ['doc_quality', 'doc_bhp'])
+
+    def test_legacy_document_without_path_gets_path_once(self):
+        """Dokument sprzed ścieżek: przy nowej wersji ścieżkę trzeba wybrać, potem jest już stała."""
+        document = self.create_document().json()
+        ApprovalStep.objects.filter(version_id=document['versions'][0]['id']).delete()
+        DocumentVersion.objects.filter(pk=document['versions'][0]['id']).update(status='APPROVED')
+
+        self.client.force_authenticate(self.author)
+        url = f"/api/doc/documents/{document['id']}/versions/"
+        self.assertEqual(self.client.post(url, {'file': self.upload()}, format='multipart').status_code, 400)
+        response = self.client.post(url, {'file': self.upload(), 'approval_path': '["doc_bhp"]'}, format='multipart')
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(response.json()['approval_path'], ['doc_bhp'])
 
     def test_author_sees_only_own_documents_admin_sees_all(self):
         self.create_document()
