@@ -1,4 +1,20 @@
+from django.contrib.auth import get_user_model
+
 from .modules import get_user_modules
+
+
+def generate_unique_username(first_name: str, last_name: str) -> str:
+    """Login z 2 pierwszych liter imienia i 3 ostatnich nazwiska (jak przy kontach UR), z licznikiem przy kolizji."""
+    User = get_user_model()
+    fn = first_name.strip().lower()
+    ln = last_name.strip().lower()
+    base_username = f"{fn[:2]}{ln[-3:]}"
+    username = base_username
+    counter = 2
+    while User.objects.filter(username=username).exists():
+        username = f"{base_username}{counter}"
+        counter += 1
+    return username
 
 
 def build_auth_user_payload(user) -> dict:
