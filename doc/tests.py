@@ -8,7 +8,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import override_settings
 from rest_framework.test import APITestCase
 
-from .models import Family, Operation, Phase, Factory, Department, DocumentVersion
+from .models import Family, Operation, Phase, Factory, Department, DocumentVersion, ApprovalStep
 
 User = get_user_model()
 TEMP_MEDIA = tempfile.mkdtemp()
@@ -198,6 +198,42 @@ class DocApiTests(APITestCase):
         self.assertEqual(rejected.decision_comment, 'Zła kolejność')
         self.client.force_authenticate(self.bhp)
         self.assertEqual(self.client.get('/api/doc/approvals/').json(), [])
+
+    def test_rejection_note_with_screenshots(self):
+        document = self.create_document().json()
+        quality_step = document['versions'][0]['approval_steps'][0]
+
+        self.client.force_authenticate(self.quality)
+        response = self.client.post(f"/api/doc/approval-steps/{quality_step['id']}/reject/", {
+            'comment': 'Złe zdjęcie w kroku 2',
+            'files': [
+                SimpleUploadedFile('zrzut-1.png', b'\x89PNG fake', content_type='image/png'),
+                SimpleUploadedFile('uwagi.txt', b'tekst', content_type='text/plain'),
+            ],
+        }, format='multipart')
+        self.assertEqual(response.status_code, 200, response.content)
+
+        # Notatka jest widoczna w szczegółach dokumentu dodającego
+        self.client.force_authenticate(self.author)
+        detail = self.client.get(f"/api/doc/documents/{document['id']}/").json()
+        step = detail['versions'][0]['approval_steps'][0]
+        self.assertEqual(step['comment'], 'Złe zdjęcie w kroku 2')
+        self.assertEqual([(a['original_filename'], a['is_image']) for a in step['attachments']],
+                         [('zrzut-1.png', True), ('uwagi.txt', False)])
+        self.assertEqual(self.client.get(step['attachments'][0]['url']).status_code, 200)
+
+        # Operator nie ma dostępu do notatek odrzuconej wersji
+        self.client.force_authenticate(self.operator)
+        self.assertEqual(self.client.get(step['attachments'][0]['url']).status_code, 404)
+
+    def test_rejection_rejects_too_many_files(self):
+        quality_step = self.create_document().json()['versions'][0]['approval_steps'][0]
+        self.client.force_authenticate(self.quality)
+        files = [SimpleUploadedFile(f'z{i}.png', b'x', content_type='image/png') for i in range(11)]
+        response = self.client.post(f"/api/doc/approval-steps/{quality_step['id']}/reject/",
+                                    {'comment': 'Za dużo', 'files': files}, format='multipart')
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(ApprovalStep.objects.get(pk=quality_step['id']).status, 'PENDING')
 
     def test_admin_creates_user_and_sets_groups_without_touching_ur_groups(self):
         self.client.force_authenticate(self.admin)

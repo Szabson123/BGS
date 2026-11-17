@@ -67,6 +67,15 @@ def serialize_steps(version) -> list[dict]:
             'decided_by_name': user_display_name(step.decided_by),
             'decided_at': step.decided_at,
             'comment': step.comment,
+            'attachments': [
+                {
+                    'id': attachment.id,
+                    'original_filename': attachment.original_filename,
+                    'is_image': attachment.is_image,
+                    'url': f"/api/doc/step-attachments/{attachment.id}/file/",
+                }
+                for attachment in step.attachments.all()
+            ],
         }
         for step in version.approval_steps.all()
     ]

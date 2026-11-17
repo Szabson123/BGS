@@ -3,7 +3,7 @@ from rest_framework.routers import DefaultRouter
 
 from .views import (
     FamilyViewSet, OperationViewSet, PhaseViewSet, FactoryViewSet, DepartmentViewSet,
-    DocumentViewSet, DocumentVersionFileView, PendingApprovalsView, ApprovalStepDecisionView,
+    DocumentViewSet, DocumentVersionFileView, PendingApprovalsView, ApprovalStepDecisionView, StepAttachmentFileView,
     OperatorDocumentsView, DocUserViewSet,
 )
 
@@ -21,6 +21,7 @@ urlpatterns = [
     path('operator/documents/', OperatorDocumentsView.as_view(), name='doc-operator-documents'),
     path('versions/<int:version_id>/file/', DocumentVersionFileView.as_view(), name='doc-version-file'),
     path('approvals/', PendingApprovalsView.as_view(), name='doc-pending-approvals'),
+    path('step-attachments/<int:attachment_id>/file/', StepAttachmentFileView.as_view(), name='doc-step-attachment-file'),
     path('approval-steps/<int:step_id>/approve/', ApprovalStepDecisionView.as_view(),
          {'decision': 'approve'}, name='doc-step-approve'),
     path('approval-steps/<int:step_id>/reject/', ApprovalStepDecisionView.as_view(),

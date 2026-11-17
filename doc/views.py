@@ -1,3 +1,4 @@
+import os
 import secrets
 import string
 
@@ -16,7 +17,9 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from user.services import generate_unique_username
-from .models import Family, Operation, Phase, Factory, Department, Document, DocumentVersion, ApprovalStep
+from .models import (
+    Family, Operation, Phase, Factory, Department, Document, DocumentVersion, ApprovalStep, ApprovalStepAttachment,
+)
 from .permissions import HasDocAccess, IsDocAdmin, IsDocAdminOrReadOnly, CanAddDocuments
 from .roles import is_doc_admin, can_add_documents, set_user_doc_groups, user_sections
 from .serializers import (
@@ -27,6 +30,10 @@ from .serializers import (
 )
 
 User = get_user_model()
+
+# Notatka do odrzucenia: limity załączników
+MAX_NOTE_FILES = 10
+MAX_NOTE_FILE_SIZE = 20 * 1024 * 1024
 
 
 # --- Słowniki --------------------------------------------------------------
@@ -102,7 +109,7 @@ class DocumentViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.C
             .prefetch_related(Prefetch(
                 'versions',
                 queryset=DocumentVersion.objects.select_related('uploaded_by', 'decided_by').prefetch_related(
-                    Prefetch('approval_steps', queryset=ApprovalStep.objects.select_related('decided_by'))
+                    Prefetch('approval_steps', queryset=ApprovalStep.objects.select_related('decided_by').prefetch_related('attachments'))
                 ),
             ))
             .annotate(latest_status=Subquery(latest_status.values('status')[:1]))
@@ -164,7 +171,7 @@ def _steps_queryset():
             'decided_by', 'version__uploaded_by', 'version__document__factory', 'version__document__department',
             'version__document__phase__operation__family',
         )
-        .prefetch_related(Prefetch('version__approval_steps', queryset=ApprovalStep.objects.select_related('decided_by')))
+        .prefetch_related(Prefetch('version__approval_steps', queryset=ApprovalStep.objects.select_related('decided_by').prefetch_related('attachments')))
     )
 
 
@@ -188,11 +195,24 @@ class PendingApprovalsView(APIView):
 class ApprovalStepDecisionView(APIView):
     """
     Zatwierdzenie / odrzucenie kroku przez osobę z jego sekcji.
-    Odrzucenie kończy całą wersję; zatwierdzenie ostatniego kroku zatwierdza wersję (operatorzy ją widzą).
+    Odrzucenie (powód + opcjonalne pliki "files", np. zrzuty ekranu) kończy całą wersję;
+    zatwierdzenie ostatniego kroku zatwierdza wersję (operatorzy ją widzą).
     """
     permission_classes = [HasDocAccess]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def post(self, request, step_id, decision):
+        files = request.FILES.getlist('files') if decision == 'reject' else []
+        if len(files) > MAX_NOTE_FILES:
+            return Response({'detail': f'Możesz dołączyć maksymalnie {MAX_NOTE_FILES} plików.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        too_big = next((f for f in files if f.size > MAX_NOTE_FILE_SIZE), None)
+        if too_big:
+            return Response(
+                {'detail': f'Plik {too_big.name} jest za duży (maks. {MAX_NOTE_FILE_SIZE // (1024 * 1024)} MB).'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         with transaction.atomic():
             # Blokada wersji – dwie osoby z sekcji nie zdecydują jednocześnie
             step = get_object_or_404(ApprovalStep.objects.select_related('version'), pk=step_id)
@@ -218,6 +238,15 @@ class ApprovalStepDecisionView(APIView):
             step.comment = comment
             step.save(update_fields=['status', 'decided_by', 'decided_at', 'comment', 'updated_at'])
 
+            for uploaded in files:
+                ApprovalStepAttachment.objects.create(
+                    step=step,
+                    file=uploaded,
+                    original_filename=os.path.basename(uploaded.name),
+                    content_type=uploaded.content_type or '',
+                    uploaded_by=request.user,
+                )
+
             version_finished = decision == 'reject' or not version.active_steps()
             if version_finished:
                 version.status = (
@@ -232,6 +261,30 @@ class ApprovalStepDecisionView(APIView):
         return Response(PendingApprovalSerializer(step).data)
 
 
+def _can_see_unapproved(user, version) -> bool:
+    """Niezatwierdzoną wersję (i notatki do niej) widzą dodający, administrator i sekcje z jej ścieżki."""
+    if can_add_documents(user):
+        return True
+    path_sections = set(version.approval_steps.values_list('section', flat=True))
+    return bool(path_sections & user_sections(user))
+
+
+@method_decorator(xframe_options_sameorigin, name='dispatch')
+class StepAttachmentFileView(APIView):
+    """Plik z notatki do decyzji (np. zrzut ekranu przy odrzuceniu)."""
+    permission_classes = [HasDocAccess]
+
+    def get(self, request, attachment_id):
+        attachment = get_object_or_404(ApprovalStepAttachment.objects.select_related('step__version'), pk=attachment_id)
+        if not _can_see_unapproved(request.user, attachment.step.version):
+            raise Http404
+        try:
+            file = attachment.file.open('rb')
+        except FileNotFoundError:
+            raise Http404
+        return FileResponse(file, as_attachment=False, filename=attachment.original_filename)
+
+
 @method_decorator(xframe_options_sameorigin, name='dispatch')
 class DocumentVersionFileView(APIView):
     """
@@ -243,10 +296,8 @@ class DocumentVersionFileView(APIView):
 
     def get(self, request, version_id):
         version = get_object_or_404(DocumentVersion.objects.select_related('document'), pk=version_id)
-        if version.status != DocumentVersion.Status.APPROVED and not can_add_documents(request.user):
-            path_sections = set(version.approval_steps.values_list('section', flat=True))
-            if not (path_sections & user_sections(request.user)):
-                raise Http404
+        if version.status != DocumentVersion.Status.APPROVED and not _can_see_unapproved(request.user, version):
+            raise Http404
         try:
             file = version.file.open('rb')
         except FileNotFoundError:

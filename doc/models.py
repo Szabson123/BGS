@@ -175,3 +175,26 @@ class ApprovalStep(BaseModel):
 
     def __str__(self):
         return f"{self.version} · {self.order}. {self.section} ({self.status})"
+
+
+def step_attachment_upload_to(instance, filename):
+    return os.path.join('doc', 'approval-notes', str(instance.step_id), filename)
+
+
+class ApprovalStepAttachment(BaseModel):
+    """Plik do notatki przy decyzji (np. zrzut ekranu dołączony do odrzucenia)."""
+    step = models.ForeignKey(ApprovalStep, on_delete=models.CASCADE, related_name='attachments')
+    file = models.FileField(upload_to=step_attachment_upload_to)
+    original_filename = models.CharField(max_length=255)
+    content_type = models.CharField(max_length=100, blank=True)
+    uploaded_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='doc_step_attachments')
+
+    class Meta:
+        ordering = ['id']
+
+    @property
+    def is_image(self) -> bool:
+        return self.content_type.startswith('image/')
+
+    def __str__(self):
+        return f"{self.step} · {self.original_filename}"
