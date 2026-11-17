@@ -31,6 +31,11 @@ def user_doc_groups(user) -> set[str]:
     return set(user.groups.filter(name__startswith='doc_').values_list('name', flat=True))
 
 
+def user_sections(user) -> set[str]:
+    """Sekcje akceptujących, do których należy użytkownik."""
+    return user_doc_groups(user) & set(DOC_SECTIONS)
+
+
 def is_doc_admin(user) -> bool:
     return bool(user and user.is_authenticated and (user.is_superuser or ROLE_ADMIN in user_doc_groups(user)))
 

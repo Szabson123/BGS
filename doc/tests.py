@@ -1,3 +1,4 @@
+import json
 import shutil
 import tempfile
 
@@ -32,6 +33,8 @@ class DocApiTests(APITestCase):
         self.author = make_user('author', 'doc_author')
         self.operator = make_user('operator', 'doc_operator')
         self.ur_only = make_user('urworker', 'ur_worker')
+        self.quality = make_user('quality', 'doc_quality')
+        self.bhp = make_user('bhp', 'doc_bhp')
 
         family = Family.objects.create(name='Kebaby')
         operation = Operation.objects.create(family=family, name='Nakładanie kebaba')
@@ -42,7 +45,7 @@ class DocApiTests(APITestCase):
     def upload(self, name='instrukcja.pdf'):
         return SimpleUploadedFile(name, b'%PDF-1.4 test', content_type='application/pdf')
 
-    def create_document(self, user=None):
+    def create_document(self, user=None, path=('doc_quality', 'doc_bhp')):
         self.client.force_authenticate(user or self.author)
         return self.client.post('/api/doc/documents/', {
             'title': 'Wydawanie kebaba',
@@ -51,7 +54,18 @@ class DocApiTests(APITestCase):
             'department': self.department.id,
             'file': self.upload(),
             'change_description': 'Pierwsza wersja',
+            'approval_path': json.dumps(list(path)),
         }, format='multipart')
+
+    def decide(self, user, step_id, decision='approve', comment=''):
+        self.client.force_authenticate(user)
+        return self.client.post(f'/api/doc/approval-steps/{step_id}/{decision}/', {'comment': comment}, format='json')
+
+    def approve_all(self, version):
+        """Zatwierdza wszystkie kroki wersji po kolei (dane z odpowiedzi API)."""
+        users = {'doc_quality': self.quality, 'doc_bhp': self.bhp}
+        for step in version['approval_steps']:
+            self.assertEqual(self.decide(users[step['section']], step['id']).status_code, 200)
 
     def test_dictionaries_read_for_doc_users_write_for_admin(self):
         self.client.force_authenticate(self.operator)
@@ -83,18 +97,20 @@ class DocApiTests(APITestCase):
         self.assertEqual(document['number'], f"INS-{document['id']:04d}")
         self.assertEqual(document['latest_version']['status'], 'PENDING')
 
+        sections = [step['section'] for step in document['versions'][0]['approval_steps']]
+        self.assertEqual(sections, ['doc_quality', 'doc_bhp'])
+
         # Kolejna wersja zablokowana, dopóki poprzednia czeka na akceptację
         response = self.client.post(f"/api/doc/documents/{document['id']}/versions/",
-                                    {'file': self.upload()}, format='multipart')
+                                    {'file': self.upload(), 'approval_path': '["doc_quality"]'}, format='multipart')
         self.assertEqual(response.status_code, 400)
 
-        version_id = document['versions'][0]['id']
-        self.client.force_authenticate(self.admin)
-        self.assertEqual(self.client.post(f'/api/doc/versions/{version_id}/approve/').status_code, 200)
+        self.approve_all(document['versions'][0])
 
         self.client.force_authenticate(self.author)
         response = self.client.post(f"/api/doc/documents/{document['id']}/versions/",
-                                    {'file': self.upload('v2.xlsx'), 'change_description': 'Poprawka'},
+                                    {'file': self.upload('v2.xlsx'), 'change_description': 'Poprawka',
+                                     'approval_path': '["doc_bhp"]'},
                                     format='multipart')
         self.assertEqual(response.status_code, 201, response.content)
         self.assertEqual(response.json()['latest_version']['version_number'], 2)
@@ -134,6 +150,54 @@ class DocApiTests(APITestCase):
         response = self.client.get(f'/api/doc/versions/{v2.pk}/file/')
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers['X-Frame-Options'], 'SAMEORIGIN')
+
+    def test_approval_path_validation(self):
+        self.assertEqual(self.create_document(path=()).status_code, 400)
+        self.assertEqual(self.create_document(path=('doc_quality', 'doc_quality')).status_code, 400)
+        self.assertEqual(self.create_document(path=('doc_unknown',)).status_code, 400)
+        # Sekcja Production nie ma nikogo – nikt nie mógłby zaakceptować
+        response = self.create_document(path=('doc_production',))
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('Production', response.json()['approval_path'][0])
+
+    def test_steps_are_approved_in_order_by_section_members(self):
+        version = self.create_document().json()['versions'][0]
+        quality_step, bhp_step = version['approval_steps']
+        self.assertTrue(quality_step['is_active'])
+        self.assertFalse(bhp_step['is_active'])
+
+        # BHP widzi pustą skrzynkę i nie może jeszcze decydować; Quality widzi swój krok
+        self.client.force_authenticate(self.bhp)
+        self.assertEqual(self.client.get('/api/doc/approvals/').json(), [])
+        self.assertEqual(self.decide(self.bhp, bhp_step['id']).status_code, 400)
+        self.assertEqual(self.decide(self.bhp, quality_step['id']).status_code, 403)
+
+        self.client.force_authenticate(self.quality)
+        inbox = self.client.get('/api/doc/approvals/').json()
+        self.assertEqual([item['id'] for item in inbox], [quality_step['id']])
+        # Akceptujący może otworzyć plik oczekującej wersji
+        self.assertEqual(self.client.get(f"/api/doc/versions/{version['id']}/file/").status_code, 200)
+
+        self.assertEqual(self.decide(self.quality, quality_step['id']).status_code, 200)
+        self.assertEqual(self.decide(self.quality, quality_step['id']).status_code, 400)  # już rozpatrzony
+        self.assertEqual(DocumentVersion.objects.get(pk=version['id']).status, 'PENDING')
+
+        self.client.force_authenticate(self.bhp)
+        self.assertEqual(len(self.client.get('/api/doc/approvals/').json()), 1)
+        self.assertEqual(self.decide(self.bhp, bhp_step['id']).status_code, 200)
+        self.assertEqual(DocumentVersion.objects.get(pk=version['id']).status, 'APPROVED')
+
+    def test_rejection_requires_comment_and_ends_version(self):
+        version = self.create_document().json()['versions'][0]
+        quality_step = version['approval_steps'][0]
+        self.assertEqual(self.decide(self.quality, quality_step['id'], 'reject').status_code, 400)
+        self.assertEqual(self.decide(self.quality, quality_step['id'], 'reject', 'Zła kolejność').status_code, 200)
+
+        rejected = DocumentVersion.objects.get(pk=version['id'])
+        self.assertEqual(rejected.status, 'REJECTED')
+        self.assertEqual(rejected.decision_comment, 'Zła kolejność')
+        self.client.force_authenticate(self.bhp)
+        self.assertEqual(self.client.get('/api/doc/approvals/').json(), [])
 
     def test_admin_creates_user_and_sets_groups_without_touching_ur_groups(self):
         self.client.force_authenticate(self.admin)

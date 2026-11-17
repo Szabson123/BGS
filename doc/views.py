@@ -16,13 +16,13 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from user.services import generate_unique_username
-from .models import Family, Operation, Phase, Factory, Department, Document, DocumentVersion
+from .models import Family, Operation, Phase, Factory, Department, Document, DocumentVersion, ApprovalStep
 from .permissions import HasDocAccess, IsDocAdmin, IsDocAdminOrReadOnly, CanAddDocuments
-from .roles import is_doc_admin, can_add_documents, set_user_doc_groups
+from .roles import is_doc_admin, can_add_documents, set_user_doc_groups, user_sections
 from .serializers import (
     FamilySerializer, OperationSerializer, PhaseSerializer, FactorySerializer, DepartmentSerializer,
     DocumentListSerializer, DocumentDetailSerializer, DocumentCreateSerializer, DocumentVersionCreateSerializer,
-    DocumentVersionSerializer, OperatorDocumentSerializer,
+    OperatorDocumentSerializer, PendingApprovalSerializer,
     DocUserSerializer, DocUserGroupsSerializer, DocUserCreateSerializer,
 )
 
@@ -99,7 +99,12 @@ class DocumentViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.C
         queryset = (
             Document.objects
             .select_related('phase__operation__family', 'factory', 'department', 'created_by')
-            .prefetch_related(Prefetch('versions', queryset=DocumentVersion.objects.select_related('uploaded_by', 'decided_by')))
+            .prefetch_related(Prefetch(
+                'versions',
+                queryset=DocumentVersion.objects.select_related('uploaded_by', 'decided_by').prefetch_related(
+                    Prefetch('approval_steps', queryset=ApprovalStep.objects.select_related('decided_by'))
+                ),
+            ))
             .annotate(latest_status=Subquery(latest_status.values('status')[:1]))
         )
         if not is_doc_admin(self.request.user):
@@ -152,40 +157,96 @@ class DocumentViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.C
         return Response(DocumentDetailSerializer(detail).data, status=status.HTTP_201_CREATED)
 
 
-class DocumentVersionDecisionView(APIView):
-    """
-    TYMCZASOWE: administrator ręcznie zatwierdza / odrzuca wersję,
-    dopóki nie powstanie ścieżka akceptacji (Quality / BHP / Production).
-    """
-    permission_classes = [IsDocAdmin]
-
-    def post(self, request, version_id, decision):
-        version = get_object_or_404(DocumentVersion, pk=version_id)
-        if version.status != DocumentVersion.Status.PENDING:
-            return Response({'detail': 'Ta wersja została już rozpatrzona.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        version.status = (
-            DocumentVersion.Status.APPROVED if decision == 'approve' else DocumentVersion.Status.REJECTED
+def _steps_queryset():
+    return (
+        ApprovalStep.objects
+        .select_related(
+            'decided_by', 'version__uploaded_by', 'version__document__factory', 'version__document__department',
+            'version__document__phase__operation__family',
         )
-        version.decided_by = request.user
-        version.decided_at = timezone.now()
-        version.decision_comment = request.data.get('comment', '')
-        version.save(update_fields=['status', 'decided_by', 'decided_at', 'decision_comment', 'updated_at'])
-        return Response(DocumentVersionSerializer(version).data)
+        .prefetch_related(Prefetch('version__approval_steps', queryset=ApprovalStep.objects.select_related('decided_by')))
+    )
+
+
+class PendingApprovalsView(APIView):
+    """Kroki, które teraz czekają na decyzję sekcji zalogowanego użytkownika."""
+    permission_classes = [HasDocAccess]
+
+    def get(self, request):
+        sections = user_sections(request.user)
+        if not sections:
+            return Response([])
+        candidates = _steps_queryset().filter(
+            section__in=sections,
+            status=ApprovalStep.Status.PENDING,
+            version__status=DocumentVersion.Status.PENDING,
+        ).order_by('version__created_at')
+        active = [step for step in candidates if step in step.version.active_steps()]
+        return Response(PendingApprovalSerializer(active, many=True).data)
+
+
+class ApprovalStepDecisionView(APIView):
+    """
+    Zatwierdzenie / odrzucenie kroku przez osobę z jego sekcji.
+    Odrzucenie kończy całą wersję; zatwierdzenie ostatniego kroku zatwierdza wersję (operatorzy ją widzą).
+    """
+    permission_classes = [HasDocAccess]
+
+    def post(self, request, step_id, decision):
+        with transaction.atomic():
+            # Blokada wersji – dwie osoby z sekcji nie zdecydują jednocześnie
+            step = get_object_or_404(ApprovalStep.objects.select_related('version'), pk=step_id)
+            version = DocumentVersion.objects.select_for_update().get(pk=step.version_id)
+            step.refresh_from_db()
+
+            if step.section not in user_sections(request.user):
+                return Response({'detail': 'Ten krok akceptuje inna sekcja.'}, status=status.HTTP_403_FORBIDDEN)
+            if step not in version.active_steps():
+                return Response(
+                    {'detail': 'Ten krok nie czeka teraz na decyzję (został już rozpatrzony albo jeszcze nie jego kolej).'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            comment = str(request.data.get('comment', '')).strip()
+            if decision == 'reject' and not comment:
+                return Response({'detail': 'Podaj powód odrzucenia.'}, status=status.HTTP_400_BAD_REQUEST)
+
+            now = timezone.now()
+            step.status = ApprovalStep.Status.APPROVED if decision == 'approve' else ApprovalStep.Status.REJECTED
+            step.decided_by = request.user
+            step.decided_at = now
+            step.comment = comment
+            step.save(update_fields=['status', 'decided_by', 'decided_at', 'comment', 'updated_at'])
+
+            version_finished = decision == 'reject' or not version.active_steps()
+            if version_finished:
+                version.status = (
+                    DocumentVersion.Status.REJECTED if decision == 'reject' else DocumentVersion.Status.APPROVED
+                )
+                version.decided_by = request.user
+                version.decided_at = now
+                version.decision_comment = comment
+                version.save(update_fields=['status', 'decided_by', 'decided_at', 'decision_comment', 'updated_at'])
+
+        step = _steps_queryset().get(pk=step.pk)
+        return Response(PendingApprovalSerializer(step).data)
 
 
 @method_decorator(xframe_options_sameorigin, name='dispatch')
 class DocumentVersionFileView(APIView):
     """
     Plik wersji do wyświetlenia w przeglądarce.
-    Zatwierdzone wersje – każdy z dostępem do DOC; pozostałe – tylko dodający i administrator.
+    Zatwierdzone wersje – każdy z dostępem do DOC; pozostałe – dodający, administrator
+    oraz osoby z sekcji, które są w ścieżce akceptacji tej wersji.
     """
     permission_classes = [HasDocAccess]
 
     def get(self, request, version_id):
         version = get_object_or_404(DocumentVersion.objects.select_related('document'), pk=version_id)
         if version.status != DocumentVersion.Status.APPROVED and not can_add_documents(request.user):
-            raise Http404
+            path_sections = set(version.approval_steps.values_list('section', flat=True))
+            if not (path_sections & user_sections(request.user)):
+                raise Http404
         try:
             file = version.file.open('rb')
         except FileNotFoundError:

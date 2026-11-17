@@ -137,3 +137,41 @@ class DocumentVersion(BaseModel):
 
     def __str__(self):
         return f"{self.document.number} v{self.version_number} ({self.status})"
+
+    def active_steps(self):
+        """Kroki, które teraz czekają na decyzję: oczekujące z najniższym numerem kolejności.
+        Kroki z tym samym numerem to kroki równoległe (na razie interfejs tworzy tylko kolejne)."""
+        if self.status != self.Status.PENDING:
+            return []
+        pending = [step for step in self.approval_steps.all() if step.status == ApprovalStep.Status.PENDING]
+        if not pending:
+            return []
+        first_order = min(step.order for step in pending)
+        return [step for step in pending if step.order == first_order]
+
+
+class ApprovalStep(BaseModel):
+    """Krok ścieżki akceptacji wersji – decyduje dowolna osoba z danej sekcji (grupa doc_quality / doc_bhp / ...)."""
+    class Status(models.TextChoices):
+        PENDING = 'PENDING', 'Oczekuje'
+        APPROVED = 'APPROVED', 'Zatwierdzony'
+        REJECTED = 'REJECTED', 'Odrzucony'
+
+    version = models.ForeignKey(DocumentVersion, on_delete=models.CASCADE, related_name='approval_steps')
+    order = models.PositiveIntegerField()
+    section = models.CharField(max_length=50)
+    status = models.CharField(max_length=20, choices=Status, default=Status.PENDING)
+    decided_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True, related_name='doc_approval_decisions'
+    )
+    decided_at = models.DateTimeField(null=True, blank=True)
+    comment = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ['order', 'id']
+        constraints = [
+            models.UniqueConstraint(fields=['version', 'section'], name='doc_step_unique_section_in_version'),
+        ]
+
+    def __str__(self):
+        return f"{self.version} · {self.order}. {self.section} ({self.status})"

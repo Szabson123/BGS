@@ -1,3 +1,4 @@
+import json
 import os
 
 from django.contrib.auth import get_user_model
@@ -5,7 +6,7 @@ from django.db import transaction
 from django.db.models import Max
 from rest_framework import serializers
 
-from .models import Family, Operation, Phase, Factory, Department, Document, DocumentVersion
+from .models import Family, Operation, Phase, Factory, Department, Document, DocumentVersion, ApprovalStep
 from .roles import DOC_ROLES, DOC_SECTIONS
 
 User = get_user_model()
@@ -52,19 +53,42 @@ def user_display_name(user) -> str:
     return full_name or user.username
 
 
+def serialize_steps(version) -> list[dict]:
+    """Kroki ścieżki akceptacji wersji (approval_steps powinny być prefetchowane)."""
+    active_ids = {step.id for step in version.active_steps()}
+    return [
+        {
+            'id': step.id,
+            'order': step.order,
+            'section': step.section,
+            'section_label': DOC_SECTIONS.get(step.section, step.section),
+            'status': step.status,
+            'is_active': step.id in active_ids,
+            'decided_by_name': user_display_name(step.decided_by),
+            'decided_at': step.decided_at,
+            'comment': step.comment,
+        }
+        for step in version.approval_steps.all()
+    ]
+
+
 class DocumentVersionSerializer(serializers.ModelSerializer):
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     uploaded_by_name = serializers.SerializerMethodField()
     decided_by_name = serializers.SerializerMethodField()
     file_url = serializers.SerializerMethodField()
+    approval_steps = serializers.SerializerMethodField()
 
     class Meta:
         model = DocumentVersion
         fields = [
             'id', 'version_number', 'original_filename', 'file_url', 'change_description',
             'status', 'status_display', 'uploaded_by_name', 'created_at',
-            'decided_by_name', 'decided_at', 'decision_comment',
+            'decided_by_name', 'decided_at', 'decision_comment', 'approval_steps',
         ]
+
+    def get_approval_steps(self, obj):
+        return serialize_steps(obj)
 
     def get_uploaded_by_name(self, obj):
         return user_display_name(obj.uploaded_by)
@@ -125,6 +149,7 @@ class DocumentListSerializer(serializers.ModelSerializer):
             'status': latest.status,
             'status_display': latest.get_status_display(),
             'created_at': latest.created_at,
+            'approval_steps': serialize_steps(latest),
         }
 
     def get_current_version_number(self, obj):
@@ -148,9 +173,46 @@ def _validate_has_no_pending(document):
         )
 
 
-def _create_version(document, file, change_description, user) -> DocumentVersion:
+class ApprovalPathField(serializers.Field):
+    """
+    Ścieżka akceptacji: sekcje w kolejności zatwierdzania, np. ["doc_quality", "doc_bhp"].
+    Przy wysyłce multipart przychodzi jako tekst JSON.
+    """
+    default_error_messages = {
+        'invalid': 'Nieprawidłowa ścieżka akceptacji.',
+        'empty': 'Dodaj co najmniej jeden krok akceptacji.',
+        'unknown': 'Nieznana sekcja: {section}.',
+        'duplicate': 'Każda sekcja może wystąpić w ścieżce tylko raz.',
+        'no_members': 'Sekcja {section} nie ma żadnej aktywnej osoby – dokument nie mógłby zostać zaakceptowany.',
+    }
+
+    def to_internal_value(self, data):
+        if isinstance(data, str):
+            try:
+                data = json.loads(data)
+            except ValueError:
+                self.fail('invalid')
+        if not isinstance(data, list) or not all(isinstance(item, str) for item in data):
+            self.fail('invalid')
+        if not data:
+            self.fail('empty')
+        for section in data:
+            if section not in DOC_SECTIONS:
+                self.fail('unknown', section=section)
+        if len(set(data)) != len(data):
+            self.fail('duplicate')
+        for section in data:
+            if not User.objects.filter(groups__name=section, is_active=True).exists():
+                self.fail('no_members', section=DOC_SECTIONS[section])
+        return data
+
+    def to_representation(self, value):
+        return value
+
+
+def _create_version(document, file, change_description, approval_path, user) -> DocumentVersion:
     next_number = (document.versions.aggregate(m=Max('version_number'))['m'] or 0) + 1
-    return DocumentVersion.objects.create(
+    version = DocumentVersion.objects.create(
         document=document,
         version_number=next_number,
         file=file,
@@ -158,43 +220,97 @@ def _create_version(document, file, change_description, user) -> DocumentVersion
         change_description=change_description,
         uploaded_by=user,
     )
+    ApprovalStep.objects.bulk_create([
+        ApprovalStep(version=version, order=index, section=section)
+        for index, section in enumerate(approval_path, start=1)
+    ])
+    return version
 
 
 class DocumentCreateSerializer(serializers.Serializer):
-    """Nowy dokument z pierwszą wersją pliku."""
+    """Nowy dokument z pierwszą wersją pliku i jej ścieżką akceptacji."""
     title = serializers.CharField(max_length=255)
     phase = serializers.PrimaryKeyRelatedField(queryset=Phase.objects.filter(is_active=True))
     factory = serializers.PrimaryKeyRelatedField(queryset=Factory.objects.filter(is_active=True))
     department = serializers.PrimaryKeyRelatedField(queryset=Department.objects.filter(is_active=True))
     file = serializers.FileField()
     change_description = serializers.CharField(required=False, allow_blank=True, default='')
+    approval_path = ApprovalPathField()
 
     def create(self, validated_data):
         user = self.context['request'].user
         file = validated_data.pop('file')
         change_description = validated_data.pop('change_description')
+        approval_path = validated_data.pop('approval_path')
         with transaction.atomic():
             document = Document.objects.create(created_by=user, **validated_data)
-            _create_version(document, file, change_description, user)
+            _create_version(document, file, change_description, approval_path, user)
         return document
 
 
 class DocumentVersionCreateSerializer(serializers.Serializer):
-    """Nowa wersja istniejącego dokumentu."""
+    """Nowa wersja istniejącego dokumentu z własną ścieżką akceptacji."""
     file = serializers.FileField()
     change_description = serializers.CharField(required=False, allow_blank=True, default='')
+    approval_path = ApprovalPathField()
 
     def validate(self, attrs):
         _validate_has_no_pending(self.context['document'])
         return attrs
 
     def create(self, validated_data):
-        return _create_version(
-            self.context['document'],
-            validated_data['file'],
-            validated_data['change_description'],
-            self.context['request'].user,
-        )
+        with transaction.atomic():
+            return _create_version(
+                self.context['document'],
+                validated_data['file'],
+                validated_data['change_description'],
+                validated_data['approval_path'],
+                self.context['request'].user,
+            )
+
+
+class PendingApprovalSerializer(serializers.ModelSerializer):
+    """Skrzynka akceptującego: krok, który teraz czeka na decyzję jego sekcji."""
+    section_label = serializers.SerializerMethodField()
+    document = serializers.SerializerMethodField()
+    version = serializers.SerializerMethodField()
+    steps = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ApprovalStep
+        fields = ['id', 'order', 'section', 'section_label', 'document', 'version', 'steps']
+
+    def get_section_label(self, obj):
+        return DOC_SECTIONS.get(obj.section, obj.section)
+
+    def get_document(self, obj):
+        document = obj.version.document
+        phase = document.phase
+        return {
+            'id': document.id,
+            'number': document.number,
+            'title': document.title,
+            'family': phase.operation.family.name,
+            'operation': phase.operation.name,
+            'phase': phase.name,
+            'factory': document.factory.name,
+            'department': document.department.name,
+        }
+
+    def get_version(self, obj):
+        version = obj.version
+        return {
+            'id': version.id,
+            'version_number': version.version_number,
+            'original_filename': version.original_filename,
+            'file_url': f"/api/doc/versions/{version.id}/file/",
+            'change_description': version.change_description,
+            'uploaded_by_name': user_display_name(version.uploaded_by),
+            'created_at': version.created_at,
+        }
+
+    def get_steps(self, obj):
+        return serialize_steps(obj.version)
 
 
 class OperatorDocumentSerializer(serializers.ModelSerializer):

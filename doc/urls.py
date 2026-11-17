@@ -3,7 +3,7 @@ from rest_framework.routers import DefaultRouter
 
 from .views import (
     FamilyViewSet, OperationViewSet, PhaseViewSet, FactoryViewSet, DepartmentViewSet,
-    DocumentViewSet, DocumentVersionDecisionView, DocumentVersionFileView,
+    DocumentViewSet, DocumentVersionFileView, PendingApprovalsView, ApprovalStepDecisionView,
     OperatorDocumentsView, DocUserViewSet,
 )
 
@@ -20,9 +20,10 @@ router.register(r'admin/users', DocUserViewSet, basename='doc-admin-users')
 urlpatterns = [
     path('operator/documents/', OperatorDocumentsView.as_view(), name='doc-operator-documents'),
     path('versions/<int:version_id>/file/', DocumentVersionFileView.as_view(), name='doc-version-file'),
-    path('versions/<int:version_id>/approve/', DocumentVersionDecisionView.as_view(),
-         {'decision': 'approve'}, name='doc-version-approve'),
-    path('versions/<int:version_id>/reject/', DocumentVersionDecisionView.as_view(),
-         {'decision': 'reject'}, name='doc-version-reject'),
+    path('approvals/', PendingApprovalsView.as_view(), name='doc-pending-approvals'),
+    path('approval-steps/<int:step_id>/approve/', ApprovalStepDecisionView.as_view(),
+         {'decision': 'approve'}, name='doc-step-approve'),
+    path('approval-steps/<int:step_id>/reject/', ApprovalStepDecisionView.as_view(),
+         {'decision': 'reject'}, name='doc-step-reject'),
     path('', include(router.urls)),
 ]
