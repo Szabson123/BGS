@@ -106,6 +106,10 @@ def document_version_upload_to(instance, filename):
     return os.path.join('doc', 'documents', str(instance.document_id), f"v{instance.version_number}", filename)
 
 
+def document_version_pdf_upload_to(instance, filename):
+    return os.path.join('doc', 'documents', str(instance.document_id), f"v{instance.version_number}", 'pdf', filename)
+
+
 class DocumentVersion(BaseModel):
     """
     Kolejna wersja pliku dokumentu. Wersji się nie nadpisuje.
@@ -128,6 +132,20 @@ class DocumentVersion(BaseModel):
     )
     decided_at = models.DateTimeField(null=True, blank=True)
     decision_comment = models.TextField(blank=True)
+
+    # Konwersja arkuszy do PDF w mikroserwisie BGS-converter (fire & forget + callback)
+    class ConversionStatus(models.TextChoices):
+        NOT_NEEDED = 'NOT_NEEDED', 'Nie dotyczy'
+        PENDING = 'PENDING', 'Konwersja do PDF w toku'
+        DONE = 'DONE', 'PDF gotowy'
+        FAILED = 'FAILED', 'Błąd konwersji do PDF'
+
+    conversion_status = models.CharField(max_length=20, choices=ConversionStatus, default=ConversionStatus.NOT_NEEDED)
+    conversion_error = models.TextField(blank=True)
+    # Identyfikator bieżącego zlecenia – callback ze starego (np. sprzed ponowienia) jest odrzucany
+    conversion_job_id = models.CharField(max_length=64, blank=True)
+    conversion_requested_at = models.DateTimeField(null=True, blank=True)
+    pdf_file = models.FileField(upload_to=document_version_pdf_upload_to, blank=True)
 
     class Meta:
         ordering = ['-version_number']

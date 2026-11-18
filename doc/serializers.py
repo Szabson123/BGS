@@ -8,6 +8,7 @@ from rest_framework import serializers
 
 from .models import Family, Operation, Phase, Factory, Department, Document, DocumentVersion, ApprovalStep
 from .roles import DOC_ROLES, DOC_SECTIONS
+from .conversion import can_retry, needs_conversion, request_conversion
 
 User = get_user_model()
 
@@ -81,12 +82,22 @@ def serialize_steps(version) -> list[dict]:
     ]
 
 
+def version_pdf_url(version):
+    """PDF z konwertera – tylko gdy konwersja się udała."""
+    if version.conversion_status == DocumentVersion.ConversionStatus.DONE and version.pdf_file:
+        return f"/api/doc/versions/{version.id}/file/?variant=pdf"
+    return None
+
+
 class DocumentVersionSerializer(serializers.ModelSerializer):
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     uploaded_by_name = serializers.SerializerMethodField()
     decided_by_name = serializers.SerializerMethodField()
     file_url = serializers.SerializerMethodField()
     approval_steps = serializers.SerializerMethodField()
+    pdf_url = serializers.SerializerMethodField()
+    conversion_status_display = serializers.CharField(source='get_conversion_status_display', read_only=True)
+    can_retry_conversion = serializers.SerializerMethodField()
 
     class Meta:
         model = DocumentVersion
@@ -94,7 +105,14 @@ class DocumentVersionSerializer(serializers.ModelSerializer):
             'id', 'version_number', 'original_filename', 'file_url', 'change_description',
             'status', 'status_display', 'uploaded_by_name', 'created_at',
             'decided_by_name', 'decided_at', 'decision_comment', 'approval_steps',
+            'pdf_url', 'conversion_status', 'conversion_status_display', 'conversion_error', 'can_retry_conversion',
         ]
+
+    def get_pdf_url(self, obj):
+        return version_pdf_url(obj)
+
+    def get_can_retry_conversion(self, obj):
+        return can_retry(obj)
 
     def get_approval_steps(self, obj):
         return serialize_steps(obj)
@@ -242,25 +260,81 @@ def _create_version(document, file, change_description, approval_path, user) -> 
         ApprovalStep(version=version, order=index, section=section)
         for index, section in enumerate(approval_path, start=1)
     ])
+    if needs_conversion(version.original_filename):
+        request_conversion(version)
     return version
 
 
+def _find_or_new(model, name, label, **parent):
+    """Istniejąca pozycja o tej nazwie (bez względu na wielkość liter) albo None – wtedy powstanie przy zapisie."""
+    existing = model.objects.filter(name__iexact=name, **parent).first() if all(parent.values()) or not parent else None
+    if existing and not existing.is_active:
+        raise serializers.ValidationError({f'{label}_name': f'„{existing.name}” jest dezaktywowana – wybierz inną lub poproś administratora.'})
+    return existing
+
+
 class DocumentCreateSerializer(serializers.Serializer):
-    """Nowy dokument z pierwszą wersją pliku i jej ścieżką akceptacji."""
+    """
+    Nowy dokument z pierwszą wersją pliku i jej ścieżką akceptacji.
+
+    Miejsce: `phase` (id istniejącej fazy) albo rodzina/operacja/faza podane jako id lub wpisana nazwa
+    (`family`/`family_name`, `operation`/`operation_name`, `phase_name`). Brakujące pozycje
+    tworzą się razem z dokumentem, w jednej transakcji.
+    """
     title = serializers.CharField(max_length=255)
-    phase = serializers.PrimaryKeyRelatedField(queryset=Phase.objects.filter(is_active=True))
+    phase = serializers.PrimaryKeyRelatedField(queryset=Phase.objects.filter(is_active=True), required=False)
+    family = serializers.PrimaryKeyRelatedField(queryset=Family.objects.filter(is_active=True), required=False)
+    operation = serializers.PrimaryKeyRelatedField(queryset=Operation.objects.filter(is_active=True), required=False)
+    family_name = serializers.CharField(max_length=255, required=False, allow_blank=True, trim_whitespace=True)
+    operation_name = serializers.CharField(max_length=255, required=False, allow_blank=True, trim_whitespace=True)
+    phase_name = serializers.CharField(max_length=255, required=False, allow_blank=True, trim_whitespace=True)
     factory = serializers.PrimaryKeyRelatedField(queryset=Factory.objects.filter(is_active=True))
     department = serializers.PrimaryKeyRelatedField(queryset=Department.objects.filter(is_active=True))
     file = serializers.FileField()
     change_description = serializers.CharField(required=False, allow_blank=True, default='')
     approval_path = ApprovalPathField()
 
+    def validate(self, attrs):
+        names = {key: attrs.pop(f'{key}_name', '') for key in ('family', 'operation', 'phase')}
+        family, operation = attrs.pop('family', None), attrs.pop('operation', None)
+        if attrs.get('phase'):
+            return attrs
+
+        if not family:
+            if not names['family']:
+                raise serializers.ValidationError({'family_name': 'Wybierz lub wpisz rodzinę.'})
+            family = _find_or_new(Family, names['family'], 'family')
+        if operation and family and operation.family_id != family.id:
+            raise serializers.ValidationError({'operation': 'Operacja nie należy do wybranej rodziny.'})
+        if not operation:
+            if not names['operation']:
+                raise serializers.ValidationError({'operation_name': 'Wybierz lub wpisz operację.'})
+            operation = _find_or_new(Operation, names['operation'], 'operation', family=family)
+        if not names['phase']:
+            raise serializers.ValidationError({'phase_name': 'Wybierz lub wpisz fazę.'})
+        phase = _find_or_new(Phase, names['phase'], 'phase', operation=operation)
+
+        if phase:
+            attrs['phase'] = phase
+        else:
+            attrs['_new_place'] = {'family': family, 'operation': operation, 'names': names}
+        return attrs
+
+    @staticmethod
+    def _create_place(place):
+        family = place['family'] or Family.objects.create(name=place['names']['family'])
+        operation = place['operation'] or Operation.objects.create(family=family, name=place['names']['operation'])
+        return Phase.objects.create(operation=operation, name=place['names']['phase'])
+
     def create(self, validated_data):
         user = self.context['request'].user
         file = validated_data.pop('file')
         change_description = validated_data.pop('change_description')
         approval_path = validated_data.pop('approval_path')
+        new_place = validated_data.pop('_new_place', None)
         with transaction.atomic():
+            if new_place:
+                validated_data['phase'] = self._create_place(new_place)
             document = Document.objects.create(created_by=user, **validated_data)
             _create_version(document, file, change_description, approval_path, user)
         return document
@@ -282,7 +356,11 @@ def document_approval_path(document) -> list[str]:
 class DocumentVersionCreateSerializer(serializers.Serializer):
     """Nowa wersja istniejącego dokumentu – ścieżka akceptacji przechodzi z poprzedniej wersji bez zmian."""
     file = serializers.FileField()
-    change_description = serializers.CharField(required=False, allow_blank=True, default='')
+    # Przy nowej wersji opis zmian jest obowiązkowy (pierwsza wersja dokumentu go nie wymaga)
+    change_description = serializers.CharField(error_messages={
+        'required': 'Opisz, co zmieniło się w tej wersji.',
+        'blank': 'Opisz, co zmieniło się w tej wersji.',
+    })
     approval_path = ApprovalPathField(required=False)
 
     def validate(self, attrs):
@@ -351,6 +429,7 @@ class PendingApprovalSerializer(serializers.ModelSerializer):
             'version_number': version.version_number,
             'original_filename': version.original_filename,
             'file_url': f"/api/doc/versions/{version.id}/file/",
+            'pdf_url': version_pdf_url(version),
             'change_description': version.change_description,
             'uploaded_by_name': user_display_name(version.uploaded_by),
             'created_at': version.created_at,
@@ -376,6 +455,7 @@ class OperatorDocumentSerializer(serializers.ModelSerializer):
             'version_number': version.version_number,
             'original_filename': version.original_filename,
             'file_url': f"/api/doc/versions/{version.id}/file/",
+            'pdf_url': version_pdf_url(version),
             'approved_at': version.decided_at,
         }
 

@@ -1,11 +1,16 @@
 import json
 import shutil
 import tempfile
+from datetime import timedelta
+from unittest import mock
+
+import httpx
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import override_settings
+from django.utils import timezone
 from rest_framework.test import APITestCase
 
 from .models import Family, Operation, Phase, Factory, Department, DocumentVersion, ApprovalStep
@@ -102,15 +107,23 @@ class DocApiTests(APITestCase):
 
         # Kolejna wersja zablokowana, dopóki poprzednia czeka na akceptację
         response = self.client.post(f"/api/doc/documents/{document['id']}/versions/",
-                                    {'file': self.upload(), 'approval_path': '["doc_quality"]'}, format='multipart')
+                                    {'file': self.upload(), 'approval_path': '["doc_quality"]', 'change_description': 'X'},
+                                    format='multipart')
         self.assertEqual(response.status_code, 400)
 
         self.approve_all(document['versions'][0])
 
         self.client.force_authenticate(self.author)
+        # Opis zmian jest obowiązkowy przy nowej wersji
+        response = self.client.post(f"/api/doc/documents/{document['id']}/versions/",
+                                    {'file': self.upload('v2.xlsx'), 'change_description': '  '}, format='multipart')
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('change_description', response.json())
+
         # Ścieżki nie można zmienić przy nowej wersji
         response = self.client.post(f"/api/doc/documents/{document['id']}/versions/",
-                                    {'file': self.upload('v2.xlsx'), 'approval_path': '["doc_bhp"]'},
+                                    {'file': self.upload('v2.xlsx'), 'approval_path': '["doc_bhp"]',
+                                     'change_description': 'Poprawka'},
                                     format='multipart')
         self.assertEqual(response.status_code, 400)
         self.assertIn('nie można zmienić', response.json()['approval_path'][0])
@@ -126,6 +139,53 @@ class DocApiTests(APITestCase):
         self.assertEqual(body['approval_path'], ['doc_quality', 'doc_bhp'])
         self.assertEqual([s['section'] for s in body['latest_version']['approval_steps']], ['doc_quality', 'doc_bhp'])
 
+    def post_with_place(self, place, user=None):
+        self.client.force_authenticate(user or self.author)
+        return self.client.post('/api/doc/documents/', {
+            'title': 'Nowe miejsce', 'factory': self.factory.id, 'department': self.department.id,
+            'file': self.upload(), 'approval_path': json.dumps(['doc_quality']), **place,
+        }, format='multipart')
+
+    def test_create_document_creates_missing_family_operation_phase(self):
+        response = self.post_with_place({'family_name': ' Pizze ', 'operation_name': 'Pieczenie', 'phase_name': 'Wyjęcie'})
+        self.assertEqual(response.status_code, 201, response.content)
+        body = response.json()
+        self.assertEqual([body['family']['name'], body['operation']['name'], body['phase']['name']],
+                         ['Pizze', 'Pieczenie', 'Wyjęcie'])
+
+        # Istniejąca rodzina (id) + nowa operacja i faza
+        family = self.phase.operation.family
+        response = self.post_with_place({'family': family.id, 'operation_name': 'Pakowanie', 'phase_name': 'Folia'})
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(Operation.objects.filter(family=family).count(), 2)
+
+    def test_typed_names_reuse_existing_entries_case_insensitive(self):
+        response = self.post_with_place({'family_name': 'kebaby', 'operation_name': 'NAKŁADANIE KEBABA',
+                                         'phase_name': 'wydanie dla klienta'})
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(response.json()['phase']['id'], self.phase.id)
+        self.assertEqual((Family.objects.count(), Operation.objects.count(), Phase.objects.count()), (1, 1, 1))
+
+    def test_missing_place_or_failed_document_creates_nothing(self):
+        response = self.post_with_place({'family_name': 'Pizze', 'operation_name': 'Pieczenie'})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('phase_name', response.json())
+
+        # Błędna ścieżka akceptacji – nowe pozycje nie mogą zostać w słownikach
+        self.client.force_authenticate(self.author)
+        response = self.client.post('/api/doc/documents/', {
+            'title': 'X', 'factory': self.factory.id, 'department': self.department.id, 'file': self.upload(),
+            'approval_path': '[]', 'family_name': 'Pizze', 'operation_name': 'Pieczenie', 'phase_name': 'Wyjęcie',
+        }, format='multipart')
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(Family.objects.filter(name='Pizze').exists())
+
+    def test_inactive_typed_name_is_rejected(self):
+        Family.objects.create(name='Stare', is_active=False)
+        response = self.post_with_place({'family_name': 'stare', 'operation_name': 'A', 'phase_name': 'B'})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('family_name', response.json())
+
     def test_legacy_document_without_path_gets_path_once(self):
         """Dokument sprzed ścieżek: przy nowej wersji ścieżkę trzeba wybrać, potem jest już stała."""
         document = self.create_document().json()
@@ -134,8 +194,11 @@ class DocApiTests(APITestCase):
 
         self.client.force_authenticate(self.author)
         url = f"/api/doc/documents/{document['id']}/versions/"
-        self.assertEqual(self.client.post(url, {'file': self.upload()}, format='multipart').status_code, 400)
-        response = self.client.post(url, {'file': self.upload(), 'approval_path': '["doc_bhp"]'}, format='multipart')
+        response = self.client.post(url, {'file': self.upload(), 'change_description': 'Poprawka'}, format='multipart')
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('approval_path', response.json())
+        response = self.client.post(url, {'file': self.upload(), 'approval_path': '["doc_bhp"]',
+                                          'change_description': 'Poprawka'}, format='multipart')
         self.assertEqual(response.status_code, 201, response.content)
         self.assertEqual(response.json()['approval_path'], ['doc_bhp'])
 
@@ -277,3 +340,127 @@ class DocApiTests(APITestCase):
 
         self.client.force_authenticate(self.author)
         self.assertEqual(self.client.get('/api/doc/admin/users/').status_code, 403)
+
+
+@override_settings(MEDIA_ROOT=TEMP_MEDIA, DOC_CONVERTER_URL='http://converter', DOC_CONVERTER_API_KEY='secret',
+                   DOC_CONVERTER_CALLBACK_BASE='http://django')
+class DocConversionTests(APITestCase):
+    """Arkusze idą do BGS-converter (fire & forget), wynik wraca callbackiem."""
+
+    def setUp(self):
+        self.author = make_user('author', 'doc_author')
+        make_user('quality', 'doc_quality')
+        family = Family.objects.create(name='Kebaby')
+        operation = Operation.objects.create(family=family, name='Nakładanie')
+        self.phase = Phase.objects.create(operation=operation, name='Wydanie')
+        self.factory = Factory.objects.create(name='Zakład 1')
+        self.department = Department.objects.create(name='Montaż')
+        # Wątek w tle wykonujemy od razu, w tym samym wątku testu
+        patcher = mock.patch('doc.conversion.start_background', lambda target, *args: target(*args))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def create(self, filename='instrukcja.xlsx', converter_response=None):
+        post = mock.Mock(return_value=converter_response or httpx.Response(202, json={'status': 'accepted'}))
+        if isinstance(converter_response, Exception):
+            post = mock.Mock(side_effect=converter_response)
+        self.client.force_authenticate(self.author)
+        with mock.patch('doc.conversion.httpx.post', post), self.captureOnCommitCallbacks(execute=True):
+            response = self.client.post('/api/doc/documents/', {
+                'title': 'T', 'phase': self.phase.id, 'factory': self.factory.id, 'department': self.department.id,
+                'file': SimpleUploadedFile(filename, b'xlsx-bytes'), 'approval_path': '["doc_quality"]',
+            }, format='multipart')
+        self.assertEqual(response.status_code, 201, response.content)
+        return DocumentVersion.objects.get(document_id=response.json()['id']), post
+
+    def callback(self, version, key='secret', **data):
+        self.client.force_authenticate(None)
+        payload = {'job_id': version.conversion_job_id, 'status': 'done', **data}
+        return self.client.post(f'/api/doc/versions/{version.id}/conversion-callback/', payload,
+                                format='multipart', HTTP_X_API_KEY=key)
+
+    def test_spreadsheet_is_sent_and_pdf_callback_saved(self):
+        version, post = self.create()
+        self.assertEqual(version.conversion_status, 'PENDING')
+        url = post.call_args.args[0]
+        sent = post.call_args.kwargs
+        self.assertEqual(url, 'http://converter/convert')
+        self.assertEqual(sent['headers'], {'X-Api-Key': 'secret'})
+        self.assertEqual(sent['data']['callback_url'], f'http://django/api/doc/versions/{version.id}/conversion-callback/')
+
+        response = self.callback(version, pdf=SimpleUploadedFile('document.pdf', b'%PDF-1.4 ok'))
+        self.assertEqual(response.status_code, 204, response.content)
+        version.refresh_from_db()
+        self.assertEqual(version.conversion_status, 'DONE')
+
+        self.client.force_authenticate(self.author)
+        detail = self.client.get(f'/api/doc/documents/{version.document_id}/').json()['versions'][0]
+        self.assertEqual(detail['pdf_url'], f'/api/doc/versions/{version.id}/file/?variant=pdf')
+        pdf = self.client.get(detail['pdf_url'])
+        self.assertEqual(b''.join(pdf.streaming_content), b'%PDF-1.4 ok')
+        self.assertIn('instrukcja.pdf', pdf.headers['Content-Disposition'])
+
+    def test_pdf_upload_is_not_converted(self):
+        version, post = self.create('instrukcja.pdf')
+        self.assertEqual(version.conversion_status, 'NOT_NEEDED')
+        post.assert_not_called()
+
+    def test_failed_conversion_is_saved_and_can_be_retried(self):
+        version, _ = self.create()
+        response = self.callback(version, status='failed', error='Przekroczono limit czasu konwersji (180 s).')
+        self.assertEqual(response.status_code, 204)
+        version.refresh_from_db()
+        self.assertEqual((version.conversion_status, version.conversion_error),
+                         ('FAILED', 'Przekroczono limit czasu konwersji (180 s).'))
+
+        old_job = version.conversion_job_id
+        self.client.force_authenticate(self.author)
+        post = mock.Mock(return_value=httpx.Response(202))
+        with mock.patch('doc.conversion.httpx.post', post), self.captureOnCommitCallbacks(execute=True):
+            self.assertEqual(self.client.post(f'/api/doc/versions/{version.id}/convert/').status_code, 202)
+        version.refresh_from_db()
+        self.assertEqual(version.conversion_status, 'PENDING')
+        self.assertNotEqual(version.conversion_job_id, old_job)
+        post.assert_called_once()
+
+        # Callback starego zlecenia jest odrzucany
+        stale = self.callback(version, pdf=SimpleUploadedFile('d.pdf', b'%PDF'), job_id=old_job)
+        self.assertEqual(stale.status_code, 409)
+
+    def test_converter_down_marks_failed(self):
+        version, _ = self.create(converter_response=httpx.ConnectError('connection refused'))
+        version.refresh_from_db()
+        self.assertEqual(version.conversion_status, 'FAILED')
+        self.assertIn('niedostępny', version.conversion_error)
+
+    def test_converter_rejection_marks_failed(self):
+        version, _ = self.create(converter_response=httpx.Response(400, json={'detail': 'Nieobsługiwany typ pliku'}))
+        version.refresh_from_db()
+        self.assertEqual(version.conversion_status, 'FAILED')
+        self.assertIn('Nieobsługiwany typ pliku', version.conversion_error)
+
+    @override_settings(DOC_CONVERTER_URL='')
+    def test_missing_configuration_marks_failed(self):
+        version, post = self.create()
+        version.refresh_from_db()
+        self.assertEqual(version.conversion_status, 'FAILED')
+        post.assert_not_called()
+
+    def test_callback_requires_key(self):
+        version, _ = self.create()
+        self.assertEqual(self.callback(version, key='zly', status='failed').status_code, 401)
+        version.refresh_from_db()
+        self.assertEqual(version.conversion_status, 'PENDING')
+
+    def test_retry_only_after_failure_or_when_stale(self):
+        version, _ = self.create()
+        self.client.force_authenticate(self.author)
+        url = f'/api/doc/versions/{version.id}/convert/'
+        self.assertEqual(self.client.post(url).status_code, 400)  # świeżo „w toku”
+
+        DocumentVersion.objects.filter(pk=version.pk).update(
+            conversion_requested_at=timezone.now() - timedelta(minutes=30))
+        with mock.patch('doc.conversion.httpx.post', mock.Mock(return_value=httpx.Response(202))), \
+                self.captureOnCommitCallbacks(execute=True):
+            self.assertEqual(self.client.post(url).status_code, 202)
+

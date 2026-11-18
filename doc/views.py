@@ -1,7 +1,9 @@
+import hmac
 import os
 import secrets
 import string
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.db.models import ProtectedError, Prefetch, Q, OuterRef, Subquery
@@ -14,12 +16,14 @@ from rest_framework import viewsets, mixins, status
 from rest_framework.decorators import action
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.response import Response
+from rest_framework.permissions import AllowAny
 from rest_framework.views import APIView
 
 from user.services import generate_unique_username
 from .models import (
     Family, Operation, Phase, Factory, Department, Document, DocumentVersion, ApprovalStep, ApprovalStepAttachment,
 )
+from . import conversion
 from .permissions import HasDocAccess, IsDocAdmin, IsDocAdminOrReadOnly, CanAddDocuments
 from .roles import is_doc_admin, can_add_documents, set_user_doc_groups, user_sections
 from .serializers import (
@@ -298,11 +302,65 @@ class DocumentVersionFileView(APIView):
         version = get_object_or_404(DocumentVersion.objects.select_related('document'), pk=version_id)
         if version.status != DocumentVersion.Status.APPROVED and not _can_see_unapproved(request.user, version):
             raise Http404
+        # ?variant=pdf – PDF z konwertera (arkusze); bez parametru – oryginalny plik
+        if request.query_params.get('variant') == 'pdf':
+            if version.conversion_status != DocumentVersion.ConversionStatus.DONE or not version.pdf_file:
+                raise Http404
+            source, filename = version.pdf_file, f"{os.path.splitext(version.original_filename)[0]}.pdf"
+        else:
+            source, filename = version.file, version.original_filename
         try:
-            file = version.file.open('rb')
+            file = source.open('rb')
         except FileNotFoundError:
             raise Http404
-        return FileResponse(file, as_attachment=False, filename=version.original_filename)
+        return FileResponse(file, as_attachment=False, filename=filename)
+
+
+class ConversionCallbackView(APIView):
+    """
+    Wynik konwersji z BGS-converter (bez sesji użytkownika – uwierzytelnia wspólny klucz X-Api-Key).
+    Przyjmowany tylko dla bieżącego zlecenia wersji (job_id), inaczej 409 – konwerter nie ponawia.
+    """
+    authentication_classes = []
+    permission_classes = [AllowAny]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request, version_id):
+        api_key = settings.DOC_CONVERTER_API_KEY
+        if not api_key or not hmac.compare_digest(request.headers.get('X-Api-Key', ''), api_key):
+            return Response({'detail': 'Nieprawidłowy klucz API.'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        Status = DocumentVersion.ConversionStatus
+        with transaction.atomic():
+            version = get_object_or_404(DocumentVersion.objects.select_for_update(), pk=version_id)
+            if version.conversion_status != Status.PENDING or version.conversion_job_id != request.data.get('job_id'):
+                return Response({'detail': 'Nieaktualne zlecenie konwersji.'}, status=status.HTTP_409_CONFLICT)
+
+            pdf = request.FILES.get('pdf')
+            if request.data.get('status') == 'done' and pdf:
+                version.pdf_file.save(f"{os.path.splitext(version.original_filename)[0]}.pdf", pdf, save=False)
+                version.conversion_status = Status.DONE
+                version.conversion_error = ''
+            else:
+                version.conversion_status = Status.FAILED
+                version.conversion_error = (request.data.get('error') or 'Konwerter nie zwrócił pliku PDF.')[:2000]
+            version.save(update_fields=['pdf_file', 'conversion_status', 'conversion_error', 'updated_at'])
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class RetryConversionView(APIView):
+    """Ponowienie konwersji po błędzie (lub gdy zlecenie zbyt długo wisi „w toku”)."""
+    permission_classes = [CanAddDocuments]
+
+    def post(self, request, version_id):
+        version = get_object_or_404(DocumentVersion.objects.select_related('document'), pk=version_id)
+        if not (is_doc_admin(request.user) or version.document.created_by_id == request.user.id):
+            raise Http404
+        if not conversion.can_retry(version):
+            return Response({'detail': 'Tej konwersji nie można teraz ponowić.'}, status=status.HTTP_400_BAD_REQUEST)
+        with transaction.atomic():
+            conversion.request_conversion(version)
+        return Response({'conversion_status': version.conversion_status}, status=status.HTTP_202_ACCEPTED)
 
 
 # --- Widok operatora -------------------------------------------------------

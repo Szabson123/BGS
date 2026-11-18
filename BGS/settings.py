@@ -125,3 +125,13 @@ SPECTACULAR_SETTINGS = {
     'VERSION': '1.0.0',
     'SERVE_INCLUDE_SCHEMA': False,
 }
+
+
+# --- BGS::DOC – konwersja arkuszy do PDF (mikroserwis BGS-converter) ---
+# Pusty URL = konwersja wyłączona (wersja dostaje status błędu z informacją o braku konfiguracji)
+DOC_CONVERTER_URL = os.getenv('DOC_CONVERTER_URL', '').rstrip('/')
+DOC_CONVERTER_API_KEY = os.getenv('DOC_CONVERTER_API_KEY', '')
+# Adres Django widziany z konwertera – tam wraca wynik
+DOC_CONVERTER_CALLBACK_BASE = os.getenv('DOC_CONVERTER_CALLBACK_BASE', 'http://127.0.0.1:8000').rstrip('/')
+# Po tylu minutach zlecenie „w toku” uznajemy za zgubione i można je ponowić
+DOC_CONVERTER_STALE_MINUTES = int(os.getenv('DOC_CONVERTER_STALE_MINUTES', '15'))
