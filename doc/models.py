@@ -184,6 +184,14 @@ class ApprovalStep(BaseModel):
     )
     decided_at = models.DateTimeField(null=True, blank=True)
     comment = models.TextField(blank=True)
+    # Sekcje z managerem: osoba wskazana przez managera do rozpatrzenia kroku
+    assigned_to = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True, related_name='doc_assigned_steps'
+    )
+    assigned_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True, related_name='doc_step_assignments'
+    )
+    assigned_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ['order', 'id']
@@ -216,3 +224,32 @@ class ApprovalStepAttachment(BaseModel):
 
     def __str__(self):
         return f"{self.step} · {self.original_filename}"
+
+
+class Notification(models.Model):
+    """Powiadomienie w module DOC (dzwonek w nawigacji): coś czeka na użytkownika albo zakończyło się."""
+    class Kind(models.TextChoices):
+        TO_ASSIGN = 'TO_ASSIGN', 'Do przypisania'
+        TO_DECIDE = 'TO_DECIDE', 'Do akceptacji'
+        ASSIGNED = 'ASSIGNED', 'Przypisano do Ciebie'
+        APPROVED = 'APPROVED', 'Wersja zatwierdzona'
+        REJECTED = 'REJECTED', 'Wersja odrzucona'
+
+    recipient = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='doc_notifications')
+    kind = models.CharField(max_length=20, choices=Kind)
+    message = models.CharField(max_length=500)
+    document = models.ForeignKey(Document, on_delete=models.CASCADE, related_name='notifications')
+    version = models.ForeignKey(DocumentVersion, on_delete=models.CASCADE, null=True, blank=True, related_name='notifications')
+    step = models.ForeignKey(ApprovalStep, on_delete=models.CASCADE, null=True, blank=True, related_name='notifications')
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='doc_caused_notifications'
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    read_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+        indexes = [models.Index(fields=['recipient', 'read_at'], name='doc_notif_recipient_read')]
+
+    def __str__(self):
+        return f"{self.recipient} · {self.kind} · {self.message}"

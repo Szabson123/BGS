@@ -6,8 +6,11 @@ from django.db import transaction
 from django.db.models import Max
 from rest_framework import serializers
 
-from .models import Family, Operation, Phase, Factory, Department, Document, DocumentVersion, ApprovalStep
-from .roles import DOC_ROLES, DOC_SECTIONS
+from .models import Family, Operation, Phase, Factory, Department, Document, DocumentVersion, ApprovalStep, Notification
+from .roles import (
+    DOC_ROLES, DOC_SECTIONS, DOC_MANAGERS, SECTION_MANAGERS, is_managed, managed_sections, member_sections, section_managers, section_people,
+)
+from .notifications import notify_active_steps
 from .conversion import can_retry, needs_conversion, request_conversion
 
 User = get_user_model()
@@ -65,6 +68,9 @@ def serialize_steps(version) -> list[dict]:
             'section_label': DOC_SECTIONS.get(step.section, step.section),
             'status': step.status,
             'is_active': step.id in active_ids,
+            'is_managed': is_managed(step.section),
+            'assigned_to_name': user_display_name(step.assigned_to),
+            'assigned_at': step.assigned_at,
             'decided_by_name': user_display_name(step.decided_by),
             'decided_at': step.decided_at,
             'comment': step.comment,
@@ -220,6 +226,7 @@ class ApprovalPathField(serializers.Field):
         'unknown': 'Nieznana sekcja: {section}.',
         'duplicate': 'Każda sekcja może wystąpić w ścieżce tylko raz.',
         'no_members': 'Sekcja {section} nie ma żadnej aktywnej osoby – dokument nie mógłby zostać zaakceptowany.',
+        'no_manager': 'Sekcja {section} nie ma aktywnego managera – nikt nie przypisałby osoby do akceptacji.',
     }
 
     def to_internal_value(self, data):
@@ -238,7 +245,10 @@ class ApprovalPathField(serializers.Field):
         if len(set(data)) != len(data):
             self.fail('duplicate')
         for section in data:
-            if not User.objects.filter(groups__name=section, is_active=True).exists():
+            if is_managed(section):
+                if not section_managers(section).exists():
+                    self.fail('no_manager', section=DOC_SECTIONS[section])
+            elif not User.objects.filter(groups__name=section, is_active=True).exists():
                 self.fail('no_members', section=DOC_SECTIONS[section])
         return data
 
@@ -262,6 +272,7 @@ def _create_version(document, file, change_description, approval_path, user) -> 
     ])
     if needs_conversion(version.original_filename):
         request_conversion(version)
+    notify_active_steps(version, actor=user)
     return version
 
 
@@ -394,16 +405,81 @@ class DocumentVersionCreateSerializer(serializers.Serializer):
             )
 
 
+def can_assign_step(user, step) -> bool:
+    """Wskazać osobę może manager sekcji kroku (tylko w sekcjach z managerem)."""
+    return is_managed(step.section) and step.section in managed_sections(user)
+
+
+def can_decide_step(user, step) -> bool:
+    """
+    Sekcja z managerem: wskazana osoba albo manager sekcji.
+    Sekcja bez managera: dowolna osoba z sekcji.
+    """
+    if is_managed(step.section):
+        return step.assigned_to_id == user.id or step.section in managed_sections(user)
+    return step.section in member_sections(user)
+
+
 class PendingApprovalSerializer(serializers.ModelSerializer):
-    """Skrzynka akceptującego: krok, który teraz czeka na decyzję jego sekcji."""
+    """
+    Skrzynka akceptującego: krok, który teraz czeka na decyzję – do przypisania (manager sekcji),
+    przypisany do użytkownika albo czekający na dowolną osobę z sekcji bez managera.
+    """
     section_label = serializers.SerializerMethodField()
     document = serializers.SerializerMethodField()
     version = serializers.SerializerMethodField()
     steps = serializers.SerializerMethodField()
+    is_managed = serializers.SerializerMethodField()
+    assigned_to = serializers.SerializerMethodField()
+    can_assign = serializers.SerializerMethodField()
+    can_decide = serializers.SerializerMethodField()
+    assignees = serializers.SerializerMethodField()
 
     class Meta:
         model = ApprovalStep
-        fields = ['id', 'order', 'section', 'section_label', 'document', 'version', 'steps']
+        fields = [
+            'id', 'order', 'section', 'section_label', 'document', 'version', 'steps',
+            'is_managed', 'assigned_to', 'assigned_at', 'can_assign', 'can_decide', 'assignees',
+        ]
+
+    def _user(self):
+        request = self.context.get('request')
+        return request.user if request else None
+
+    def get_is_managed(self, obj):
+        return is_managed(obj.section)
+
+    def get_assigned_to(self, obj):
+        if not obj.assigned_to:
+            return None
+        return {'id': obj.assigned_to.id, 'name': user_display_name(obj.assigned_to)}
+
+    def get_can_assign(self, obj):
+        user = self._user()
+        return bool(user and can_assign_step(user, obj))
+
+    def get_can_decide(self, obj):
+        user = self._user()
+        return bool(user and can_decide_step(user, obj))
+
+    def get_assignees(self, obj):
+        """Osoby do wyboru przy przypisaniu – tylko dla managera sekcji."""
+        user = self._user()
+        if not user or not can_assign_step(user, obj):
+            return []
+        cache = self.context.setdefault('_section_people', {})
+        if obj.section not in cache:
+            people = section_people(obj.section).prefetch_related('groups').order_by('last_name', 'first_name', 'username')
+            manager_group = SECTION_MANAGERS[obj.section]
+            cache[obj.section] = [
+                {
+                    'id': person.id,
+                    'name': user_display_name(person),
+                    'is_manager': any(group.name == manager_group for group in person.groups.all()),
+                }
+                for person in people
+            ]
+        return cache[obj.section]
 
     def get_section_label(self, obj):
         return DOC_SECTIONS.get(obj.section, obj.section)
@@ -440,7 +516,7 @@ class PendingApprovalSerializer(serializers.ModelSerializer):
 
 
 class OperatorDocumentSerializer(serializers.ModelSerializer):
-    """Widok operatora: dokument z jego aktualną (najnowszą zatwierdzoną) wersją."""
+    """Panel stanowiska (publiczny): dokument z jego aktualną (najnowszą zatwierdzoną) wersją."""
     number = serializers.CharField(read_only=True)
     current_version = serializers.SerializerMethodField()
 
@@ -449,13 +525,15 @@ class OperatorDocumentSerializer(serializers.ModelSerializer):
         fields = ['id', 'number', 'title', 'current_version']
 
     def get_current_version(self, obj):
+        # Adresy publiczne (panel stanowiska działa bez logowania)
         version = obj.current_versions[0]
+        base = f"/api/doc/operator/versions/{version.id}/file/"
         return {
             'id': version.id,
             'version_number': version.version_number,
             'original_filename': version.original_filename,
-            'file_url': f"/api/doc/versions/{version.id}/file/",
-            'pdf_url': version_pdf_url(version),
+            'file_url': base,
+            'pdf_url': f"{base}?variant=pdf" if version_pdf_url(version) else None,
             'approved_at': version.decided_at,
         }
 
@@ -465,12 +543,13 @@ class OperatorDocumentSerializer(serializers.ModelSerializer):
 class DocUserSerializer(serializers.ModelSerializer):
     roles = serializers.SerializerMethodField()
     sections = serializers.SerializerMethodField()
+    managers = serializers.SerializerMethodField()
 
     class Meta:
         model = User
         fields = [
             'id', 'username', 'first_name', 'last_name', 'email', 'card_code',
-            'is_active', 'is_in_change_password', 'roles', 'sections',
+            'is_active', 'is_in_change_password', 'roles', 'sections', 'managers',
         ]
 
     def _doc_groups(self, obj):
@@ -482,10 +561,14 @@ class DocUserSerializer(serializers.ModelSerializer):
     def get_sections(self, obj):
         return sorted(self._doc_groups(obj) & set(DOC_SECTIONS))
 
+    def get_managers(self, obj):
+        return sorted(self._doc_groups(obj) & set(DOC_MANAGERS))
+
 
 class DocUserGroupsSerializer(serializers.Serializer):
     roles = serializers.ListField(child=serializers.ChoiceField(choices=list(DOC_ROLES)), required=False)
     sections = serializers.ListField(child=serializers.ChoiceField(choices=list(DOC_SECTIONS)), required=False)
+    managers = serializers.ListField(child=serializers.ChoiceField(choices=list(DOC_MANAGERS)), required=False)
 
 
 class DocUserCreateSerializer(DocUserGroupsSerializer):
@@ -498,3 +581,28 @@ class DocUserCreateSerializer(DocUserGroupsSerializer):
         if value and User.objects.filter(card_code=value).exists():
             raise serializers.ValidationError('Ten kod karty jest już przypisany do innego użytkownika.')
         return value or None
+
+
+# --- Powiadomienia ---------------------------------------------------------
+
+class NotificationSerializer(serializers.ModelSerializer):
+    kind_display = serializers.CharField(source='get_kind_display', read_only=True)
+    actor_name = serializers.SerializerMethodField()
+    link = serializers.SerializerMethodField()
+    is_read = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Notification
+        fields = ['id', 'kind', 'kind_display', 'message', 'actor_name', 'link', 'is_read', 'created_at']
+
+    def get_actor_name(self, obj):
+        return user_display_name(obj.actor)
+
+    def get_is_read(self, obj):
+        return obj.read_at is not None
+
+    def get_link(self, obj):
+        """Dokąd prowadzi kliknięcie: kroki – skrzynka akceptacji, wynik – karta dokumentu."""
+        if obj.kind in (Notification.Kind.APPROVED, Notification.Kind.REJECTED):
+            return f"/doc/documents/{obj.document_id}"
+        return "/doc/approvals"

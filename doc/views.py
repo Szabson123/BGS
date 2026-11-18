@@ -22,14 +22,19 @@ from rest_framework.views import APIView
 from user.services import generate_unique_username
 from .models import (
     Family, Operation, Phase, Factory, Department, Document, DocumentVersion, ApprovalStep, ApprovalStepAttachment,
+    Notification,
 )
 from . import conversion
+from .notifications import notify_active_steps, notify_assigned, notify_version_finished, mark_step_read
 from .permissions import HasDocAccess, IsDocAdmin, IsDocAdminOrReadOnly, CanAddDocuments
-from .roles import is_doc_admin, can_add_documents, set_user_doc_groups, user_sections
+from .roles import (
+    is_doc_admin, can_add_documents, set_user_doc_groups, user_sections, member_sections, managed_sections,
+    is_managed, section_people,
+)
 from .serializers import (
     FamilySerializer, OperationSerializer, PhaseSerializer, FactorySerializer, DepartmentSerializer,
     DocumentListSerializer, DocumentDetailSerializer, DocumentCreateSerializer, DocumentVersionCreateSerializer,
-    OperatorDocumentSerializer, PendingApprovalSerializer,
+    OperatorDocumentSerializer, PendingApprovalSerializer, NotificationSerializer, can_assign_step, can_decide_step,
     DocUserSerializer, DocUserGroupsSerializer, DocUserCreateSerializer,
 )
 
@@ -113,7 +118,7 @@ class DocumentViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.C
             .prefetch_related(Prefetch(
                 'versions',
                 queryset=DocumentVersion.objects.select_related('uploaded_by', 'decided_by').prefetch_related(
-                    Prefetch('approval_steps', queryset=ApprovalStep.objects.select_related('decided_by').prefetch_related('attachments'))
+                    Prefetch('approval_steps', queryset=ApprovalStep.objects.select_related('decided_by', 'assigned_to').prefetch_related('attachments'))
                 ),
             ))
             .annotate(latest_status=Subquery(latest_status.values('status')[:1]))
@@ -172,28 +177,67 @@ def _steps_queryset():
     return (
         ApprovalStep.objects
         .select_related(
-            'decided_by', 'version__uploaded_by', 'version__document__factory', 'version__document__department',
+            'decided_by', 'assigned_to', 'version__uploaded_by', 'version__document__factory', 'version__document__department',
             'version__document__phase__operation__family',
         )
-        .prefetch_related(Prefetch('version__approval_steps', queryset=ApprovalStep.objects.select_related('decided_by').prefetch_related('attachments')))
+        .prefetch_related(Prefetch('version__approval_steps', queryset=ApprovalStep.objects.select_related('decided_by', 'assigned_to').prefetch_related('attachments')))
     )
 
 
 class PendingApprovalsView(APIView):
-    """Kroki, które teraz czekają na decyzję sekcji zalogowanego użytkownika."""
+    """
+    Aktywne kroki, przy których użytkownik ma coś do zrobienia:
+    - manager sekcji: wszystkie aktywne kroki sekcji (przypisanie i ewentualnie decyzja),
+    - osoba wskazana przez managera: kroki przypisane do niej,
+    - sekcje bez managera: kroki sekcji, do której należy.
+    """
     permission_classes = [HasDocAccess]
 
     def get(self, request):
-        sections = user_sections(request.user)
-        if not sections:
-            return Response([])
+        user = request.user
+        managed = managed_sections(user)
+        unmanaged_member = {section for section in member_sections(user) if not is_managed(section)}
+        visibility = Q(assigned_to=user) | Q(section__in=managed | unmanaged_member)
         candidates = _steps_queryset().filter(
-            section__in=sections,
+            visibility,
             status=ApprovalStep.Status.PENDING,
             version__status=DocumentVersion.Status.PENDING,
         ).order_by('version__created_at')
         active = [step for step in candidates if step in step.version.active_steps()]
-        return Response(PendingApprovalSerializer(active, many=True).data)
+        return Response(PendingApprovalSerializer(active, many=True, context={'request': request}).data)
+
+
+class AssignStepView(APIView):
+    """Manager sekcji wskazuje osobę, która rozpatrzy aktywny krok (może też zmienić wskazanie, dopóki trwa)."""
+    permission_classes = [HasDocAccess]
+
+    def post(self, request, step_id):
+        with transaction.atomic():
+            step = get_object_or_404(ApprovalStep.objects.select_related('version'), pk=step_id)
+            version = DocumentVersion.objects.select_for_update().get(pk=step.version_id)
+            step.refresh_from_db()
+
+            if not can_assign_step(request.user, step):
+                return Response({'detail': 'Osobę do tego kroku wskazuje manager jego sekcji.'},
+                                status=status.HTTP_403_FORBIDDEN)
+            if step not in version.active_steps():
+                return Response({'detail': 'Ten krok nie czeka teraz na decyzję – nie można go przypisać.'},
+                                status=status.HTTP_400_BAD_REQUEST)
+
+            assignee = section_people(step.section).filter(pk=request.data.get('user')).first()
+            if not assignee:
+                return Response({'detail': 'Wybierz aktywną osobę z tej sekcji.'}, status=status.HTTP_400_BAD_REQUEST)
+            if assignee.pk == step.assigned_to_id:
+                return Response({'detail': 'Ta osoba jest już wskazana.'}, status=status.HTTP_400_BAD_REQUEST)
+
+            step.assigned_to = assignee
+            step.assigned_by = request.user
+            step.assigned_at = timezone.now()
+            step.save(update_fields=['assigned_to', 'assigned_by', 'assigned_at', 'updated_at'])
+            notify_assigned(step, actor=request.user)
+
+        step = _steps_queryset().get(pk=step.pk)
+        return Response(PendingApprovalSerializer(step, context={'request': request}).data)
 
 
 class ApprovalStepDecisionView(APIView):
@@ -223,8 +267,11 @@ class ApprovalStepDecisionView(APIView):
             version = DocumentVersion.objects.select_for_update().get(pk=step.version_id)
             step.refresh_from_db()
 
-            if step.section not in user_sections(request.user):
-                return Response({'detail': 'Ten krok akceptuje inna sekcja.'}, status=status.HTTP_403_FORBIDDEN)
+            if not can_decide_step(request.user, step):
+                detail = ('Ten krok rozpatruje osoba wskazana przez managera sekcji.'
+                          if is_managed(step.section) and step.section in user_sections(request.user)
+                          else 'Ten krok akceptuje inna sekcja.')
+                return Response({'detail': detail}, status=status.HTTP_403_FORBIDDEN)
             if step not in version.active_steps():
                 return Response(
                     {'detail': 'Ten krok nie czeka teraz na decyzję (został już rozpatrzony albo jeszcze nie jego kolej).'},
@@ -261,8 +308,43 @@ class ApprovalStepDecisionView(APIView):
                 version.decision_comment = comment
                 version.save(update_fields=['status', 'decided_by', 'decided_at', 'decision_comment', 'updated_at'])
 
+            mark_step_read(step)
+            if version_finished:
+                notify_version_finished(version, actor=request.user, comment=comment)
+            else:
+                notify_active_steps(version, actor=request.user)
+
         step = _steps_queryset().get(pk=step.pk)
-        return Response(PendingApprovalSerializer(step).data)
+        return Response(PendingApprovalSerializer(step, context={'request': request}).data)
+
+
+# --- Powiadomienia -----------------------------------------------------------
+
+NOTIFICATIONS_LIMIT = 30
+
+
+class NotificationsView(APIView):
+    """Ostatnie powiadomienia zalogowanego użytkownika + liczba nieprzeczytanych (front odpytuje cyklicznie)."""
+    permission_classes = [HasDocAccess]
+
+    def get(self, request):
+        mine = Notification.objects.filter(recipient=request.user)
+        unread = mine.filter(read_at__isnull=True).count()
+        latest = mine.select_related('actor')[:NOTIFICATIONS_LIMIT]
+        return Response({'unread_count': unread, 'results': NotificationSerializer(latest, many=True).data})
+
+
+class NotificationReadView(APIView):
+    """Oznaczenie jednego (notification_id) albo wszystkich powiadomień jako przeczytanych."""
+    permission_classes = [HasDocAccess]
+
+    def post(self, request, notification_id=None):
+        unread = Notification.objects.filter(recipient=request.user, read_at__isnull=True)
+        if notification_id is not None:
+            get_object_or_404(Notification, pk=notification_id, recipient=request.user)
+            unread = unread.filter(pk=notification_id)
+        unread.update(read_at=timezone.now())
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 def _can_see_unapproved(user, version) -> bool:
@@ -366,23 +448,66 @@ class RetryConversionView(APIView):
 # --- Widok operatora -------------------------------------------------------
 
 class OperatorDocumentsView(APIView):
-    """Dokumenty fazy z ich najnowszą zatwierdzoną wersją. Front odpytuje to cyklicznie (polling)."""
-    permission_classes = [HasDocAccess]
+    """
+    Panel stanowiska (publiczny, bez logowania): dokumenty fazy z ich najnowszą zatwierdzoną wersją.
+    Front odpytuje to cyklicznie (polling). Niezatwierdzone wersje nigdy tu nie trafiają.
+    """
+    authentication_classes = []
+    permission_classes = [AllowAny]
 
     def get(self, request):
         phase_id = request.query_params.get('phase')
-        if not phase_id:
+        if not phase_id or not str(phase_id).isdigit():
             return Response({'detail': 'Wybierz fazę.'}, status=status.HTTP_400_BAD_REQUEST)
 
         approved = DocumentVersion.objects.filter(status=DocumentVersion.Status.APPROVED).order_by('-version_number')
         documents = (
             Document.objects
-            .filter(phase_id=phase_id, versions__status=DocumentVersion.Status.APPROVED)
+            .filter(phase_id=phase_id, phase__is_active=True, versions__status=DocumentVersion.Status.APPROVED)
             .distinct()
             .order_by('title')
             .prefetch_related(Prefetch('versions', queryset=approved, to_attr='current_versions'))
         )
         return Response(OperatorDocumentSerializer(documents, many=True).data)
+
+
+class OperatorDictionaryView(APIView):
+    """Panel stanowiska: aktywne rodziny / operacje (?family=) / fazy (?operation=) – tylko do odczytu, bez logowania."""
+    authentication_classes = []
+    permission_classes = [AllowAny]
+    model = None
+    serializer_class = None
+    parent_field = None
+
+    def get(self, request):
+        queryset = self.model.objects.filter(is_active=True)
+        if self.parent_field:
+            parent_id = request.query_params.get(self.parent_field)
+            if not parent_id or not str(parent_id).isdigit():
+                return Response([])
+            queryset = queryset.filter(**{f"{self.parent_field}_id": parent_id, f"{self.parent_field}__is_active": True})
+        return Response(self.serializer_class(queryset, many=True).data)
+
+
+@method_decorator(xframe_options_sameorigin, name='dispatch')
+class OperatorVersionFileView(APIView):
+    """Panel stanowiska: plik (lub PDF z konwertera, ?variant=pdf) wyłącznie zatwierdzonej wersji – bez logowania."""
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+    def get(self, request, version_id):
+        version = get_object_or_404(DocumentVersion, pk=version_id, status=DocumentVersion.Status.APPROVED)
+        if request.query_params.get('variant') == 'pdf':
+            if version.conversion_status != DocumentVersion.ConversionStatus.DONE or not version.pdf_file:
+                raise Http404
+            source, filename = version.pdf_file, f"{os.path.splitext(version.original_filename)[0]}.pdf"
+        else:
+            source, filename = version.file, version.original_filename
+        try:
+            file = source.open('rb')
+        except FileNotFoundError:
+            raise Http404
+        return FileResponse(file, as_attachment=False, filename=filename)
 
 
 # --- Użytkownicy (panel administratora DOC) --------------------------------
@@ -429,7 +554,9 @@ class DocUserViewSet(mixins.ListModelMixin, mixins.CreateModelMixin, mixins.Upda
                 is_active=False,
                 is_in_change_password=True,
             )
-            set_user_doc_groups(user, set(data.get('roles', [])) | set(data.get('sections', [])))
+            set_user_doc_groups(
+                user, set(data.get('roles', [])) | set(data.get('sections', [])) | set(data.get('managers', []))
+            )
 
         user = self.get_queryset().get(pk=user.pk)
         return Response(DocUserSerializer(user).data, status=status.HTTP_201_CREATED)
@@ -443,7 +570,8 @@ class DocUserViewSet(mixins.ListModelMixin, mixins.CreateModelMixin, mixins.Upda
         current = DocUserSerializer(user).data
         roles = set(data['roles']) if 'roles' in data else set(current['roles'])
         sections = set(data['sections']) if 'sections' in data else set(current['sections'])
-        set_user_doc_groups(user, roles | sections)
+        managers = set(data['managers']) if 'managers' in data else set(current['managers'])
+        set_user_doc_groups(user, roles | sections | managers)
 
         user = self.get_queryset().get(pk=user.pk)
         return Response(DocUserSerializer(user).data)

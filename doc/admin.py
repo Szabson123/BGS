@@ -33,3 +33,14 @@ class DocumentAdmin(admin.ModelAdmin):
     list_display = ['title', 'phase', 'factory', 'department', 'created_by', 'created_at']
     search_fields = ['title']
     inlines = [DocumentVersionInline]
+
+
+from .models import Notification  # noqa: E402
+
+
+@admin.register(Notification)
+class NotificationAdmin(admin.ModelAdmin):
+    list_display = ['created_at', 'recipient', 'kind', 'message', 'read_at']
+    list_filter = ['kind']
+    search_fields = ['message', 'recipient__username']
+    raw_id_fields = ['document', 'version', 'step']
