@@ -9,3 +9,5 @@ __pycache__/
 .env
 /.pytest_cache
 /do-not
+# Wgrane pliki (instrukcje, PDF z konwertera) – nie trafiają do repo
+media/
