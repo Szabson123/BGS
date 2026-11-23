@@ -510,6 +510,66 @@ class OperatorVersionFileView(APIView):
         return FileResponse(file, as_attachment=False, filename=filename)
 
 
+class VerifyDocumentView(APIView):
+    """
+    Sprawdzenie aktualności wydrukowanej instrukcji po zeskanowaniu kodu DataMatrix z 1. strony
+    (publiczne, bez logowania). ?code=<treść kodu> – np. „BGSDOC|INS-0006|2|…” albo ręcznie „INS-0006 v2”.
+
+    status: current – to obowiązująca wersja; outdated – obowiązuje nowsza; pending – wersja jeszcze
+    niezatwierdzona; rejected – wersja odrzucona; unknown – nie ma takiego dokumentu / wersji.
+    Plik zwracany jest wyłącznie dla zatwierdzonej (obowiązującej) wersji.
+    """
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        parsed = conversion.parse_stamp(request.query_params.get('code', ''))
+        if not parsed:
+            return Response({'detail': 'Nie rozpoznano kodu dokumentu BGS::DOC.'}, status=status.HTTP_400_BAD_REQUEST)
+        document_id, version_number = parsed
+        scanned = {'number': f"INS-{document_id:04d}", 'version': version_number}
+
+        document = Document.objects.select_related('phase__operation__family').filter(pk=document_id).first()
+        scanned_version = document.versions.filter(version_number=version_number).first() if document else None
+        if not scanned_version:
+            return Response({'status': 'unknown', 'scanned': scanned, 'document': None, 'current': None})
+
+        current = (document.versions.filter(status=DocumentVersion.Status.APPROVED)
+                   .order_by('-version_number').first())
+        if scanned_version.status == DocumentVersion.Status.PENDING:
+            result = 'pending'
+        elif scanned_version.status == DocumentVersion.Status.REJECTED:
+            result = 'rejected'
+        else:
+            result = 'current' if current and current.pk == scanned_version.pk else 'outdated'
+
+        phase = document.phase
+        return Response({
+            'status': result,
+            'scanned': scanned,
+            'document': {
+                'number': document.number,
+                'title': document.title,
+                'family': phase.operation.family.name,
+                'operation': phase.operation.name,
+                'phase': phase.name,
+            },
+            'current': current and {
+                'version_number': current.version_number,
+                'approved_at': current.decided_at,
+                'file_url': _operator_view_url(current),
+            },
+        })
+
+
+def _operator_view_url(version) -> str:
+    """Publiczny adres zatwierdzonej wersji – PDF z konwertera, jeśli jest, inaczej oryginalny plik."""
+    url = f"/api/doc/operator/versions/{version.id}/file/"
+    if version.conversion_status == DocumentVersion.ConversionStatus.DONE and version.pdf_file:
+        return url + '?variant=pdf'
+    return url
+
+
 # --- Użytkownicy (panel administratora DOC) --------------------------------
 
 class DocUserViewSet(mixins.ListModelMixin, mixins.CreateModelMixin, mixins.UpdateModelMixin,

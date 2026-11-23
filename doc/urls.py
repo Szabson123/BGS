@@ -5,6 +5,7 @@ from .models import Family, Operation, Phase
 from .serializers import FamilySerializer, OperationSerializer, PhaseSerializer
 
 from .views import (
+    VerifyDocumentView,
     FamilyViewSet, OperationViewSet, PhaseViewSet, FactoryViewSet, DepartmentViewSet,
     DocumentViewSet, DocumentVersionFileView, PendingApprovalsView, ApprovalStepDecisionView, StepAttachmentFileView,
     OperatorDocumentsView, DocUserViewSet, ConversionCallbackView, RetryConversionView,
@@ -31,6 +32,8 @@ urlpatterns = [
     path('operator/phases/', OperatorDictionaryView.as_view(
         model=Phase, serializer_class=PhaseSerializer, parent_field='operation'), name='doc-operator-phases'),
     path('operator/versions/<int:version_id>/file/', OperatorVersionFileView.as_view(), name='doc-operator-version-file'),
+    # Sprawdzenie aktualności wydruku po zeskanowaniu kodu DataMatrix – publiczne
+    path('verify/', VerifyDocumentView.as_view(), name='doc-verify'),
     path('versions/<int:version_id>/file/', DocumentVersionFileView.as_view(), name='doc-version-file'),
     path('versions/<int:version_id>/convert/', RetryConversionView.as_view(), name='doc-version-convert'),
     path('versions/<int:version_id>/conversion-callback/', ConversionCallbackView.as_view(),

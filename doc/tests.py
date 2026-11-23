@@ -13,7 +13,7 @@ from django.test import override_settings
 from django.utils import timezone
 from rest_framework.test import APITestCase
 
-from .models import Family, Operation, Phase, Factory, Department, DocumentVersion, ApprovalStep, Notification
+from .models import Family, Operation, Phase, Factory, Department, Document, DocumentVersion, ApprovalStep, Notification
 
 User = get_user_model()
 TEMP_MEDIA = tempfile.mkdtemp()
@@ -548,6 +548,8 @@ class DocConversionTests(APITestCase):
         self.assertEqual(url, 'http://converter/convert')
         self.assertEqual(sent['headers'], {'X-Api-Key': 'secret'})
         self.assertEqual(sent['data']['callback_url'], f'http://django/api/doc/versions/{version.id}/conversion-callback/')
+        self.assertEqual(sent['data']['stamp_text'], f'BGSDOC|INS-{version.document_id:04d}|1|Kebaby|Nakladanie|Wydanie')
+        self.assertEqual(sent['data']['stamp_label'], f'INS-{version.document_id:04d} v1')
 
         response = self.callback(version, pdf=SimpleUploadedFile('document.pdf', b'%PDF-1.4 ok'))
         self.assertEqual(response.status_code, 204, response.content)
@@ -624,4 +626,73 @@ class DocConversionTests(APITestCase):
         with mock.patch('doc.conversion.httpx.post', mock.Mock(return_value=httpx.Response(202))), \
                 self.captureOnCommitCallbacks(execute=True):
             self.assertEqual(self.client.post(url).status_code, 202)
+
+
+class DocStampTests(APITestCase):
+    """Treść kodu DataMatrix i publiczne sprawdzanie aktualności wydruku."""
+
+    def setUp(self):
+        self.author = make_user('author', 'doc_author')
+        family = Family.objects.create(name='Łączenie | płyt')
+        operation = Operation.objects.create(family=family, name='Zgrzewanie żółte')
+        self.phase = Phase.objects.create(operation=operation, name='190')
+        self.document = Document.objects.create(
+            title='Instrukcja', phase=self.phase, created_by=self.author,
+            factory=Factory.objects.create(name='Z1'), department=Department.objects.create(name='D1'),
+        )
+
+    def version(self, number, status):
+        return DocumentVersion.objects.create(
+            document=self.document, version_number=number, file=SimpleUploadedFile('a.xlsx', b'x'),
+            original_filename='a.xlsx', uploaded_by=self.author, status=status,
+        )
+
+    def verify(self, code):
+        return self.client.get('/api/doc/verify/', {'code': code})
+
+    def test_payload_is_ascii_without_separator(self):
+        from .conversion import stamp_payload
+        text, label = stamp_payload(self.version(2, 'PENDING'))
+        number = self.document.number
+        self.assertEqual(text, f'BGSDOC|{number}|2|Laczenie / plyt|Zgrzewanie zolte|190')
+        self.assertTrue(text.isascii())
+        self.assertEqual(label, f'{number} v2')
+
+    def test_parse_accepts_scanned_and_typed_codes(self):
+        from .conversion import parse_stamp
+        self.assertEqual(parse_stamp('BGSDOC|INS-0006|2|A|B|C'), (6, 2))
+        self.assertEqual(parse_stamp('ins-0006 v12'), (6, 12))
+        self.assertEqual(parse_stamp('INS-6/3'), (6, 3))
+        self.assertIsNone(parse_stamp('cokolwiek'))
+
+    def test_verify_statuses(self):
+        v1 = self.version(1, 'APPROVED')
+        number = self.document.number
+        body = self.verify(f'BGSDOC|{number}|1|x|y|z').json()
+        self.assertEqual(body['status'], 'current')
+        self.assertEqual(body['current']['file_url'], f'/api/doc/operator/versions/{v1.id}/file/')
+        self.assertEqual(body['document']['family'], 'Łączenie | płyt')
+
+        self.version(2, 'PENDING')
+        self.assertEqual(self.verify(f'{number} v2').json()['status'], 'pending')
+        self.assertEqual(self.verify(f'{number} v1').json()['status'], 'current')
+
+        DocumentVersion.objects.filter(document=self.document, version_number=2).update(status='APPROVED')
+        body = self.verify(f'{number} v1').json()
+        self.assertEqual(body['status'], 'outdated')
+        self.assertEqual(body['current']['version_number'], 2)
+
+        self.version(3, 'REJECTED')
+        self.assertEqual(self.verify(f'{number} v3').json()['status'], 'rejected')
+
+    def test_verify_unknown_and_invalid(self):
+        self.assertEqual(self.verify('INS-9999 v1').json()['status'], 'unknown')
+        self.assertEqual(self.verify(f'{self.document.number} v7').json()['status'], 'unknown')
+        self.assertEqual(self.verify('xyz').status_code, 400)
+
+    def test_pending_only_document_exposes_no_file(self):
+        self.version(1, 'PENDING')
+        body = self.verify(f'{self.document.number} v1').json()
+        self.assertEqual(body['status'], 'pending')
+        self.assertIsNone(body['current'])
 

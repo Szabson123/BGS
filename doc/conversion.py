@@ -6,7 +6,9 @@ Fire & forget: po zapisaniu wersji plik idzie do konwertera w osobnym wątku (po
 """
 import logging
 import os
+import re
 import threading
+import unicodedata
 import uuid
 from datetime import timedelta
 
@@ -22,6 +24,37 @@ logger = logging.getLogger(__name__)
 
 CONVERTIBLE_EXTENSIONS = {'.xlsx', '.xlsm', '.xls', '.ods'}
 Status = DocumentVersion.ConversionStatus
+
+
+STAMP_PREFIX = 'BGSDOC'
+_STAMP_FIELD_MAX = 40
+# Numer i wersja z zeskanowanego kodu („BGSDOC|INS-0006|2|…”) albo wpisane ręcznie („INS-0006 v2”, „INS-6/2”)
+_STAMP_RE = re.compile(r'INS-?0*(\d{1,9})\s*[|/ ]\s*v?(\d{1,6})', re.IGNORECASE)
+
+
+def _ascii(text: str) -> str:
+    """Bez polskich znaków i separatora – skanery w trybie klawiatury często psują znaki spoza ASCII."""
+    text = text.replace('ł', 'l').replace('Ł', 'L')
+    text = unicodedata.normalize('NFKD', text).encode('ascii', 'ignore').decode('ascii')
+    text = ' '.join(text.replace('|', '/').split())
+    return text[:_STAMP_FIELD_MAX]
+
+
+def stamp_payload(version: DocumentVersion) -> tuple[str, str]:
+    """Treść kodu DataMatrix na 1. stronie PDF i podpis pod nim."""
+    document = version.document
+    phase = document.phase
+    fields = [
+        STAMP_PREFIX, document.number, str(version.version_number),
+        _ascii(phase.operation.family.name), _ascii(phase.operation.name), _ascii(phase.name),
+    ]
+    return '|'.join(fields), f'{document.number} v{version.version_number}'
+
+
+def parse_stamp(text: str) -> tuple[int, int] | None:
+    """(id dokumentu, numer wersji) z zeskanowanego kodu albo None."""
+    match = _STAMP_RE.search(text or '')
+    return (int(match.group(1)), int(match.group(2))) if match else None
 
 
 def needs_conversion(filename: str) -> bool:
@@ -66,7 +99,7 @@ def start_background(target, *args) -> None:
 
 def send_to_converter(version_id: int, job_id: str) -> None:
     try:
-        version = DocumentVersion.objects.get(pk=version_id)
+        version = DocumentVersion.objects.select_related('document__phase__operation__family').get(pk=version_id)
         if version.conversion_job_id != job_id:
             return  # w międzyczasie ponowiono – wysyła już nowsze zlecenie
         if not settings.DOC_CONVERTER_URL:
@@ -74,11 +107,13 @@ def send_to_converter(version_id: int, job_id: str) -> None:
             return
 
         callback_url = settings.DOC_CONVERTER_CALLBACK_BASE + reverse('doc-conversion-callback', args=[version_id])
+        stamp_text, stamp_label = stamp_payload(version)
         with version.file.open('rb') as handle:
             response = httpx.post(
                 f'{settings.DOC_CONVERTER_URL}/convert',
                 headers={'X-Api-Key': settings.DOC_CONVERTER_API_KEY},
-                data={'job_id': job_id, 'callback_url': callback_url},
+                data={'job_id': job_id, 'callback_url': callback_url,
+                      'stamp_text': stamp_text, 'stamp_label': stamp_label},
                 files={'file': (version.original_filename, handle)},
                 timeout=httpx.Timeout(60, connect=5),
             )
