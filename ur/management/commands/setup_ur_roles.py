@@ -13,6 +13,7 @@ class Command(BaseCommand):
             'ur_production',
             'ur_supervisor',
             'ur_production_supervisor',
+            'ur_process_engineer',
         ]
 
         self.stdout.write(self.style.NOTICE('Rozpoczynam tworzenie ról dla BGS::UR...'))

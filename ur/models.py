@@ -1,3 +1,6 @@
+import hashlib
+import secrets
+
 from django.db import models
 from django.db.models import Prefetch, Window, F
 from user.models import CustomUser
@@ -281,4 +284,104 @@ class WorkshopInspectionsPresetField(BaseModel):
     preset = models.ForeignKey(WorkshopInspectionsPreset, on_delete=models.CASCADE)
     text = models.CharField(max_length=255)
     type = models.CharField(choices=AvaibleTypes, max_length=5)
+
+
+# --- UR::Cycle Guard – licznik cykli stanowiska (master + worker na komputerze stanowiska) ---
+# Komentarz -> worker co paczkę plików dolicza +1 i przenosi pliki, master pobiera stąd konfigurację
+# i polecenia (zerowanie, reset mistrza) i raportuje stan. Po osiągnięciu max_cycles produkcja stoi.
+
+def hash_station_key(raw_key: str) -> str:
+    return hashlib.sha256(raw_key.encode()).hexdigest()
+
+
+class CycleStation(BaseModel):
+    CONFIG_FIELDS = ('watch_dir', 'dest_dir', 'max_cycles', 'settle_seconds', 'tester_process_name', 'is_active')
+
+    name = models.CharField(max_length=255, unique=True)
+    # Powiązanie z maszyną UR jest opcjonalne – stanowisko może istnieć samodzielnie
+    machine = models.OneToOneField(Machine, on_delete=models.SET_NULL, null=True, blank=True,
+                                   related_name='cycle_station')
+
+    # Konfiguracja wysyłana do mastera (każda zmiana podbija config_version)
+    watch_dir = models.CharField(max_length=500)
+    dest_dir = models.CharField(max_length=500)
+    max_cycles = models.PositiveIntegerField(default=69)
+    settle_seconds = models.PositiveIntegerField(default=60)  # paczka "kompletna" po tylu sekundach bez zmian
+    tester_process_name = models.CharField(max_length=255, blank=True, default='')  # np. Tester.exe
+    is_active = models.BooleanField(default=True)
+    config_version = models.PositiveIntegerField(default=1)
+
+    # Klucz agenta – trzymamy tylko skrót, jawny klucz widać raz przy tworzeniu / regeneracji
+    api_key_hash = models.CharField(max_length=64, unique=True)
+
+    # Stan raportowany przez mastera
+    counter = models.PositiveIntegerField(default=0)
+    worker_alive = models.BooleanField(default=False)
+    worker_paused = models.BooleanField(default=False)
+    last_cycle_at = models.DateTimeField(null=True, blank=True)
+    last_seen_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['name']
+
+    def __str__(self):
+        return self.name
+
+    @property
+    def limit_reached(self) -> bool:
+        return self.counter >= self.max_cycles
+
+    def set_new_api_key(self) -> str:
+        raw_key = secrets.token_urlsafe(32)
+        self.api_key_hash = hash_station_key(raw_key)
+        return raw_key
+
+
+class CycleStationCommand(BaseModel):
+    class Type(models.TextChoices):
+        RESET_COUNTER = 'RESET_COUNTER', 'Zerowanie licznika'
+        RESTART_MASTER = 'RESTART_MASTER', 'Reset mistrza'
+
+    station = models.ForeignKey(CycleStation, on_delete=models.CASCADE, related_name='commands')
+    type = models.CharField(max_length=20, choices=Type)
+    created_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True)
+    acked_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['created_at']
+        indexes = [models.Index(fields=['station', 'acked_at'])]
+
+    def __str__(self):
+        return f"{self.station.name} – {self.get_type_display()}"
+
+
+class CycleStationEvent(BaseModel):
+    class Kind(models.TextChoices):
+        CYCLE = 'CYCLE', 'Cykl'
+        LIMIT_REACHED = 'LIMIT_REACHED', 'Koniec produkcji – osiągnięty limit cykli'
+        COMMAND_ISSUED = 'COMMAND_ISSUED', 'Wydano polecenie'
+        COUNTER_RESET = 'COUNTER_RESET', 'Licznik wyzerowany'
+        MASTER_RESTARTED = 'MASTER_RESTARTED', 'Restart mistrza'
+        WORKER_RESTARTED = 'WORKER_RESTARTED', 'Restart workera'
+        BACKEND_UNAVAILABLE = 'BACKEND_UNAVAILABLE', 'Backend był niedostępny'
+        TESTER_CLOSED = 'TESTER_CLOSED', 'Zamknięto aplikację testującą'
+        CONFIG_CHANGED = 'CONFIG_CHANGED', 'Zmiana konfiguracji'
+        ERROR = 'ERROR', 'Błąd stanowiska'
+
+    # Rodzaje, które master może zgłosić sam (reszta powstaje w backendzie)
+    AGENT_KINDS = (Kind.MASTER_RESTARTED, Kind.WORKER_RESTARTED, Kind.BACKEND_UNAVAILABLE,
+                   Kind.TESTER_CLOSED, Kind.ERROR)
+
+    station = models.ForeignKey(CycleStation, on_delete=models.CASCADE, related_name='events')
+    kind = models.CharField(max_length=24, choices=Kind)
+    message = models.CharField(max_length=500, blank=True, default='')
+    counter = models.PositiveIntegerField(null=True, blank=True)
+    user = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [models.Index(fields=['station', '-created_at'])]
+
+    def __str__(self):
+        return f"{self.station.name} – {self.kind} {self.created_at}"
 

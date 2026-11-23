@@ -135,3 +135,6 @@ DOC_CONVERTER_API_KEY = os.getenv('DOC_CONVERTER_API_KEY', '')
 DOC_CONVERTER_CALLBACK_BASE = os.getenv('DOC_CONVERTER_CALLBACK_BASE', 'http://127.0.0.1:8000').rstrip('/')
 # Po tylu minutach zlecenie „w toku” uznajemy za zgubione i można je ponowić
 DOC_CONVERTER_STALE_MINUTES = int(os.getenv('DOC_CONVERTER_STALE_MINUTES', '15'))
+
+# --- UR::Cycle Guard – stanowisko uznajemy za offline, gdy master nie raportował przez tyle sekund ---
+CYCLE_GUARD_OFFLINE_SECONDS = int(os.getenv('CYCLE_GUARD_OFFLINE_SECONDS', '30'))

@@ -16,3 +16,14 @@ admin.site.register(AdditionalEndingBreakdownInfo)
 admin.site.register(WorkSchedulePreset)
 admin.site.register(ScheduleBreak)
 admin.site.register(MachineLineName)
+
+
+@admin.register(CycleStation)
+class CycleStationAdmin(admin.ModelAdmin):
+    list_display = ('name', 'machine', 'counter', 'max_cycles', 'is_active', 'last_seen_at')
+    readonly_fields = ('api_key_hash', 'config_version', 'counter', 'worker_alive', 'worker_paused',
+                       'last_cycle_at', 'last_seen_at')
+
+
+admin.site.register(CycleStationCommand)
+admin.site.register(CycleStationEvent)

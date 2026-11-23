@@ -2,6 +2,8 @@ from rest_framework.permissions import BasePermission
 
 
 QUALITY_GROUP = 'ur_quality'
+# Inżynieria procesu – zarządza stanowiskami licznika cykli (UR::Cycle Guard)
+PROCESS_ENGINEER_GROUP = 'ur_process_engineer'
 
 
 def is_quality_user(user) -> bool:
