@@ -18,11 +18,18 @@ admin.site.register(ScheduleBreak)
 admin.site.register(MachineLineName)
 
 
+class CycleChannelInline(admin.TabularInline):
+    model = CycleChannel
+    extra = 0
+    readonly_fields = ('counter', 'last_cycle_at', 'last_num_qa', 'num_qa_checked_at')
+
+
 @admin.register(CycleStation)
 class CycleStationAdmin(admin.ModelAdmin):
-    list_display = ('name', 'machine', 'counter', 'max_cycles', 'is_active', 'last_seen_at')
-    readonly_fields = ('api_key_hash', 'config_version', 'counter', 'worker_alive', 'worker_paused',
-                       'last_cycle_at', 'last_seen_at')
+    list_display = ('name', 'machine', 'is_active', 'last_hostname', 'last_seen_at')
+    readonly_fields = ('api_key_hash', 'config_version', 'worker_alive', 'worker_paused',
+                       'last_seen_at', 'last_ip', 'last_hostname')
+    inlines = [CycleChannelInline]
 
 
 admin.site.register(CycleStationCommand)

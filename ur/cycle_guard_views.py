@@ -7,11 +7,12 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .cycle_guard import (CycleStationKeyAuthentication, ack_command, acknowledge_threat, apply_agent_status,
-                          issue_command, pending_commands)
+from .cycle_guard import (CycleStationKeyAuthentication, HasEclipseServiceKey, ack_command, acknowledge_threat,
+                          apply_agent_status, apply_num_qa, eclipse_channels, issue_command, pending_commands)
 from .cycle_guard_serializers import (AgentConfigSerializer, AgentEventSerializer, AgentStatusSerializer,
-                                      CycleStationCommandSerializer, CycleStationEventSerializer, CycleStationSerializer)
-from .models import CycleStation, CycleStationCommand, CycleStationEvent
+                                      CycleStationCommandSerializer, CycleStationEventSerializer, CycleStationSerializer,
+                                      EclipseChannelSerializer, EclipseNumQaSerializer)
+from .models import CycleChannel, CycleStation, CycleStationCommand, CycleStationEvent
 from .permissions import CycleGuardPermission, HasCycleStationKey
 
 EVENTS_DEFAULT_LIMIT = 100
@@ -30,22 +31,27 @@ class CycleStationViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         return CycleStation.objects.select_related('machine').prefetch_related(
+            'channels',
             Prefetch('commands', queryset=CycleStationCommand.objects.filter(acked_at__isnull=True),
                      to_attr='pending_command_list')
         ).annotate(active_threat_count=Count(
             'events', filter=Q(events__kind__in=CycleStationEvent.THREAT_KINDS, events__acknowledged_at__isnull=True)
         ))
 
-    def _command(self, request, command_type):
+    def _command(self, request, command_type, channel=None):
         station = self.get_object()
-        command, created = issue_command(station, command_type, request.user)
+        command, created = issue_command(station, command_type, request.user, channel=channel)
         return Response(CycleStationCommandSerializer(command).data,
                         status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
 
     @action(detail=True, methods=['post'], url_path='reset-counter')
     def reset_counter(self, request, pk=None):
-        """Zerowanie licznika – wykona master przy najbliższym odpytaniu."""
-        return self._command(request, CycleStationCommand.Type.RESET_COUNTER)
+        """Zerowanie licznika – wykona master przy najbliższym odpytaniu. {"channel": id} – jeden kanał, bez – wszystkie."""
+        channel = None
+        channel_id = request.data.get('channel')
+        if channel_id not in (None, ''):
+            channel = get_object_or_404(CycleChannel, pk=channel_id, station_id=pk)
+        return self._command(request, CycleStationCommand.Type.RESET_COUNTER, channel)
 
     @action(detail=True, methods=['post'], url_path='restart-master')
     def restart_master(self, request, pk=None):
@@ -149,7 +155,31 @@ class AgentEventView(AgentBaseView):
     def post(self, request):
         serializer = AgentEventSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        event = CycleStationEvent.objects.create(
-            station=self.station, counter=self.station.counter, **serializer.validated_data
-        )
+        event = CycleStationEvent.objects.create(station=self.station, **serializer.validated_data)
         return Response(CycleStationEventSerializer(event).data, status=status.HTTP_201_CREATED)
+
+
+# --- Serwis Eclipse (BGS-ur-eclipse-sync, klucz CYCLE_GUARD_ECLIPSE_API_KEY) ---
+
+class EclipseBaseView(APIView):
+    authentication_classes = []
+    permission_classes = [HasEclipseServiceKey]
+
+
+class EclipseChannelsView(EclipseBaseView):
+    """BoxingCode do odpytania w [Eclipse].[qav].[Batch] razem z ostatnio znanym NumQA."""
+
+    def get(self, request):
+        return Response(EclipseChannelSerializer(eclipse_channels(), many=True).data)
+
+
+class EclipseNumQaView(EclipseBaseView):
+    """Najnowsze NumQA z jednego odpytania Eclipse. Zmiana NumQA = zerowanie licznika kanału."""
+    serializer_class = EclipseNumQaSerializer
+
+    def post(self, request):
+        serializer = EclipseNumQaSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        results = {item['boxing_code']: apply_num_qa(item['boxing_code'], item['num_qa'])
+                   for item in serializer.validated_data['results']}
+        return Response({'results': results})

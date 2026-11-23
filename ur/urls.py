@@ -2,7 +2,8 @@ from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .views import *
 from .cycle_guard_views import (CycleStationViewSet, AgentHealthView, AgentConfigView, AgentStatusView,
-                                AgentCommandsView, AgentCommandAckView, AgentEventView)
+                                AgentCommandsView, AgentCommandAckView, AgentEventView, EclipseChannelsView,
+                                EclipseNumQaView)
 
 router = DefaultRouter()
 
@@ -30,6 +31,8 @@ urlpatterns = [
     path('cycle-guard/agent/commands/', AgentCommandsView.as_view(), name='cycle-agent-commands'),
     path('cycle-guard/agent/commands/<int:command_id>/ack/', AgentCommandAckView.as_view(), name='cycle-agent-command-ack'),
     path('cycle-guard/agent/events/', AgentEventView.as_view(), name='cycle-agent-events'),
+    path('cycle-guard/eclipse/channels/', EclipseChannelsView.as_view(), name='cycle-eclipse-channels'),
+    path('cycle-guard/eclipse/num-qa/', EclipseNumQaView.as_view(), name='cycle-eclipse-num-qa'),
 
     path('machines/<int:machine_id>/break-status/', MachineBreakStatusView.as_view(), name='machine-break-status'),
     path('machines/<int:machine_id>/set-schedule/', MachineSetScheduleView.as_view(), name='machine-set-schedule'),

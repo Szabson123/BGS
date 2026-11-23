@@ -291,17 +291,14 @@ def hash_station_key(raw_key: str) -> str:
 
 
 class CycleStation(BaseModel):
-    CONFIG_FIELDS = ('watch_dir', 'dest_dir', 'max_cycles', 'settle_seconds', 'tester_process_name', 'is_active')
+    CONFIG_FIELDS = ('settle_seconds', 'tester_process_name', 'is_active')
 
     name = models.CharField(max_length=255, unique=True)
     # Powiązanie z maszyną UR jest opcjonalne – stanowisko może istnieć samodzielnie
     machine = models.OneToOneField(Machine, on_delete=models.SET_NULL, null=True, blank=True,
                                    related_name='cycle_station')
 
-    # Konfiguracja wysyłana do mastera (każda zmiana podbija config_version)
-    watch_dir = models.CharField(max_length=500)
-    dest_dir = models.CharField(max_length=500)
-    max_cycles = models.PositiveIntegerField(default=69)
+    # Konfiguracja wysyłana do mastera (każda zmiana – też kanałów – podbija config_version)
     settle_seconds = models.PositiveIntegerField(default=60)  # paczka "kompletna" po tylu sekundach bez zmian
     tester_process_name = models.CharField(max_length=255, blank=True, default='')  # np. Tester.exe
     is_active = models.BooleanField(default=True)
@@ -310,11 +307,9 @@ class CycleStation(BaseModel):
     # Klucz agenta – trzymamy tylko skrót, jawny klucz widać raz przy tworzeniu / regeneracji
     api_key_hash = models.CharField(max_length=64, unique=True)
 
-    # Stan raportowany przez mastera
-    counter = models.PositiveIntegerField(default=0)
+    # Stan raportowany przez mastera (liczniki są w kanałach)
     worker_alive = models.BooleanField(default=False)
     worker_paused = models.BooleanField(default=False)
-    last_cycle_at = models.DateTimeField(null=True, blank=True)
     last_seen_at = models.DateTimeField(null=True, blank=True)
     # Skąd ostatnio zgłosił się master – tylko informacyjnie, klucz nie jest przypisany do IP (DHCP)
     last_ip = models.GenericIPAddressField(null=True, blank=True)
@@ -328,12 +323,55 @@ class CycleStation(BaseModel):
 
     @property
     def limit_reached(self) -> bool:
-        return self.counter >= self.max_cycles
+        """Wystarczy jeden kanał na limicie – staje całe stanowisko (tester jest jeden)."""
+        return any(channel.limit_reached for channel in self.channels.all())
 
     def set_new_api_key(self) -> str:
         raw_key = secrets.token_urlsafe(32)
         self.api_key_hash = hash_station_key(raw_key)
         return raw_key
+
+
+class CycleChannel(BaseModel):
+    """
+    Jedno miejsce, do którego loguje stanowisko: folder obserwowany + docelowy + BoxingCode z Eclipse.
+    Każdy kanał ma własny licznik i limit; zmiana NumQA dla BoxingCode w Eclipse zeruje licznik kanału.
+    """
+    CONFIG_FIELDS = ('name', 'boxing_code', 'watch_dir', 'dest_dir', 'max_cycles')
+
+    station = models.ForeignKey(CycleStation, on_delete=models.CASCADE, related_name='channels')
+    name = models.CharField(max_length=255, blank=True, default='')
+    # Pusty kod = kanał bez automatycznego zerowania z Eclipse (np. przeniesiony ze starej konfiguracji)
+    boxing_code = models.CharField(max_length=64, blank=True, default='')
+    watch_dir = models.CharField(max_length=500)
+    dest_dir = models.CharField(max_length=500)
+    max_cycles = models.PositiveIntegerField(default=69)
+
+    # Stan raportowany przez mastera
+    counter = models.PositiveIntegerField(default=0)
+    last_cycle_at = models.DateTimeField(null=True, blank=True)
+
+    # Ostatni NumQA z [Eclipse].[qav].[Batch] dla boxing_code (serwis BGS-ur-eclipse-sync)
+    last_num_qa = models.BigIntegerField(null=True, blank=True)
+    num_qa_checked_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['station', 'id']
+        constraints = [
+            models.UniqueConstraint(fields=['boxing_code'], condition=~models.Q(boxing_code=''),
+                                    name='ur_cycle_channel_unique_boxing_code'),
+        ]
+
+    def __str__(self):
+        return f'{self.station.name} – {self.label}'
+
+    @property
+    def label(self) -> str:
+        return self.name or self.boxing_code or f'Kanał {self.pk}'
+
+    @property
+    def limit_reached(self) -> bool:
+        return self.counter >= self.max_cycles
 
 
 class CycleStationCommand(BaseModel):
@@ -343,6 +381,9 @@ class CycleStationCommand(BaseModel):
 
     station = models.ForeignKey(CycleStation, on_delete=models.CASCADE, related_name='commands')
     type = models.CharField(max_length=20, choices=Type)
+    # Zerowanie jednego kanału; puste = wszystkie kanały stanowiska
+    channel = models.ForeignKey(CycleChannel, on_delete=models.CASCADE, null=True, blank=True,
+                                related_name='commands')
     created_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True)
     acked_at = models.DateTimeField(null=True, blank=True)
 
@@ -368,6 +409,7 @@ class CycleStationEvent(BaseModel):
         ERROR = 'ERROR', 'Błąd stanowiska'
         KEY_CONFLICT = 'KEY_CONFLICT', 'Klucz używany na dwóch komputerach'
         HOST_CHANGED = 'HOST_CHANGED', 'Zmiana komputera stanowiska'
+        QA_BATCH_CHANGED = 'QA_BATCH_CHANGED', 'Nowa paczka QA w Eclipse'
 
     # Rodzaje, które master może zgłosić sam (reszta powstaje w backendzie)
     AGENT_KINDS = (Kind.MASTER_RESTARTED, Kind.WORKER_RESTARTED, Kind.BACKEND_UNAVAILABLE,
@@ -377,6 +419,8 @@ class CycleStationEvent(BaseModel):
                     Kind.WORKER_RESTARTED, Kind.ERROR)
 
     station = models.ForeignKey(CycleStation, on_delete=models.CASCADE, related_name='events')
+    channel = models.ForeignKey(CycleChannel, on_delete=models.SET_NULL, null=True, blank=True,
+                                related_name='events')
     kind = models.CharField(max_length=24, choices=Kind)
     message = models.CharField(max_length=500, blank=True, default='')
     counter = models.PositiveIntegerField(null=True, blank=True)
