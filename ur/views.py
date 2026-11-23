@@ -1,4 +1,4 @@
-from django.db.models import Prefetch, Case, When, Value, IntegerField, Q
+from django.db.models import Prefetch, Case, When, Value, IntegerField, Q, F
 from django_filters.rest_framework import DjangoFilterBackend
 from django.shortcuts import get_object_or_404
 from django.db import transaction
@@ -394,7 +394,8 @@ class BreakdownOptionsView(CurrentWorkshopMixin, GenericAPIView):
         dept_ids = report_department_ids(request.user, workshop)
 
         if dept_ids is None and workshop:
-            machines = Machine.objects.filter(workshop=workshop).values('id', 'name')
+            machines = (Machine.objects.filter(workshop=workshop)
+                        .values('id', 'name', 'alias', line_name=F('line__name')))
             # Tylko linie, które mają maszyny w bieżącym warsztacie
             # (related_name na Machine.line to 'lines'; jeśli zmienisz na 'machines', popraw lookup)
             lines = (MachineLineName.objects
@@ -408,7 +409,7 @@ class BreakdownOptionsView(CurrentWorkshopMixin, GenericAPIView):
             # Produkcja / Quality: maszyny z aktualnych departamentów i słowniki warsztatów tych maszyn
             dept_machines = Machine.objects.filter(department_id__in=dept_ids)
             workshop_ids = dept_machines.exclude(workshop__isnull=True).values_list('workshop_id', flat=True)
-            machines = dept_machines.values('id', 'name')
+            machines = dept_machines.values('id', 'name', 'alias', line_name=F('line__name'))
             lines = (MachineLineName.objects
                      .filter(lines__department_id__in=dept_ids)
                      .distinct()
@@ -446,7 +447,8 @@ class BreakdownMoveOptionView(CurrentWorkshopMixin, GenericAPIView):
             return Response({"error": "Workshop not found"}, status=status.HTTP_404_NOT_FOUND)
 
         departments = Department.objects.all().values('id', 'name')
-        machines = Machine.objects.filter(workshop=workshop).values('id', 'name')
+        machines = (Machine.objects.filter(workshop=workshop)
+                    .values('id', 'name', 'alias', line_name=F('line__name')))
 
         users = CustomUser.objects.filter(workshopparticipant__workshop=workshop)
 

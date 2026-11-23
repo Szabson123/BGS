@@ -11,6 +11,14 @@ class LookupOptionSerializer(serializers.Serializer):
     id = serializers.IntegerField()
     name = serializers.CharField()
 
+class MachineOptionSerializer(serializers.Serializer):
+    """Maszyna na liście filtrów – z aliasem i nazwą linii, bo same nazwy maszyn bywają zdublowane."""
+    id = serializers.IntegerField()
+    name = serializers.CharField()
+    alias = serializers.CharField(allow_null=True, required=False)
+    line_name = serializers.CharField(allow_null=True, required=False)
+
+
 class ChoicesOptionSerializer(serializers.Serializer):
     value = serializers.CharField()
     label = serializers.CharField()
@@ -349,14 +357,14 @@ class BreakdownOptionsResponseSerializer(serializers.Serializer):
     priorities = ChoicesOptionSerializer(many=True)
     statuses = ChoicesOptionSerializer(many=True)
 
-    machines = LookupOptionSerializer(many=True)
+    machines = MachineOptionSerializer(many=True)
     lines = LookupOptionSerializer(many=True)
     close_types = LookupOptionSerializer(many=True)
     responsibles = LookupOptionSerializer(many=True)
 
 class BreakdownMoveOptionResponseSerializer(serializers.Serializer):
     departments = LookupOptionSerializer(many=True)
-    machines = LookupOptionSerializer(many=True)
+    machines = MachineOptionSerializer(many=True)
     users = UserSerializer(many=True)
     statuses = ChoicesOptionSerializer(many=True)
 
