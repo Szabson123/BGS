@@ -35,10 +35,10 @@ class CycleGuardBase(TestCase):
         self.agent = APIClient()
         self.agent.credentials(HTTP_X_API_KEY=self.api_key)
 
-    def report(self, counter, alive=True, paused=False):
+    def report(self, counter, alive=True, paused=False, hostname='PC-SMT-07', ip='10.1.4.23'):
         return self.agent.post(AGENT + 'status/', {
-            'counter': counter, 'worker_alive': alive, 'worker_paused': paused,
-        }, format='json')
+            'counter': counter, 'worker_alive': alive, 'worker_paused': paused, 'hostname': hostname,
+        }, format='json', REMOTE_ADDR=ip)
 
     def kinds(self):
         return list(self.station.events.order_by('created_at', 'id').values_list('kind', flat=True))
@@ -176,6 +176,65 @@ class AgentTests(CycleGuardBase):
         other.save()
         command = CycleStationCommand.objects.create(station=other, type=CycleStationCommand.Type.RESET_COUNTER)
         self.assertEqual(self.agent.post(f'{AGENT}commands/{command.id}/ack/').status_code, 404)
+
+    def test_records_host_and_ip(self):
+        self.report(0)
+        detail = self.client.get(f'{STATIONS}{self.station.id}/').data
+        self.assertEqual(detail['last_hostname'], 'PC-SMT-07')
+        self.assertEqual(detail['last_ip'], '10.1.4.23')
+        self.assertEqual(detail['active_threats'], 0)
+
+    def test_ip_change_on_same_computer_is_not_a_threat(self):
+        self.report(0)
+        self.report(0, ip='10.1.4.99')  # DHCP
+        self.assertEqual(self.station.events.filter(kind__in=CycleStationEvent.THREAT_KINDS).count(), 0)
+        self.station.refresh_from_db()
+        self.assertEqual(self.station.last_ip, '10.1.4.99')
+
+    def test_key_used_on_two_computers(self):
+        self.report(0)
+        self.report(0, hostname='PC-BIURO', ip='10.1.9.5')
+        self.report(0)  # komputery zgłaszają się na zmianę
+        self.report(0, hostname='PC-BIURO', ip='10.1.9.5')
+
+        conflicts = self.station.events.filter(kind=Event.KEY_CONFLICT)
+        self.assertEqual(conflicts.count(), 1)  # bez zalewania ostrzeżeniami
+        self.assertIn('PC-BIURO (10.1.9.5)', conflicts.first().message)
+        self.assertIn('PC-SMT-07 (10.1.4.23)', conflicts.first().message)
+        self.assertEqual(self.client.get(f'{STATIONS}{self.station.id}/').data['active_threats'], 1)
+
+    def test_computer_replaced_after_silence(self):
+        self.report(0)
+        CycleStation.objects.filter(pk=self.station.pk).update(last_seen_at=timezone.now() - timedelta(hours=2))
+        self.report(0, hostname='PC-SMT-NOWY', ip='10.1.4.50')
+        self.assertEqual(self.kinds(), [Event.HOST_CHANGED])
+        self.assertIn('PC-SMT-NOWY', self.station.events.first().message)
+
+    def test_threats_list_and_acknowledge(self):
+        self.report(0)
+        self.report(0, hostname='PC-BIURO', ip='10.1.9.5')
+        self.agent.post(AGENT + 'events/', {'kind': 'TESTER_CLOSED'}, format='json')  # nie jest zagrożeniem
+
+        url = f'{STATIONS}{self.station.id}/threats/'
+        threats = self.client.get(url).data
+        self.assertEqual([t['kind'] for t in threats], ['KEY_CONFLICT'])
+        self.assertTrue(threats[0]['is_threat'])
+
+        viewer = APIClient()
+        viewer.force_authenticate(self.viewer)
+        self.assertEqual(viewer.get(url).status_code, 200)
+        self.assertEqual(viewer.post(f"{url}{threats[0]['id']}/acknowledge/").status_code, 403)
+
+        ack = self.client.post(f"{url}{threats[0]['id']}/acknowledge/")
+        self.assertEqual(ack.status_code, 200)
+        self.assertEqual(ack.data['acknowledged_by_name'], 'engineer')
+        self.assertEqual(self.client.get(url).data, [])
+        self.assertEqual(len(self.client.get(url + '?all=1').data), 1)
+        self.assertEqual(self.client.get(f'{STATIONS}{self.station.id}/').data['active_threats'], 0)
+
+        # Zwykłego zdarzenia nie da się "potwierdzić" jako zagrożenia
+        cycle = self.station.events.get(kind=Event.TESTER_CLOSED)
+        self.assertEqual(self.client.post(f'{url}{cycle.id}/acknowledge/').status_code, 404)
 
     def test_agent_events(self):
         response = self.agent.post(AGENT + 'events/', {'kind': 'BACKEND_UNAVAILABLE', 'message': '2 min'},

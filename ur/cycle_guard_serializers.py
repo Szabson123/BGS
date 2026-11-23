@@ -9,6 +9,7 @@ class CycleStationSerializer(serializers.ModelSerializer):
     limit_reached = serializers.BooleanField(read_only=True)
     online = serializers.SerializerMethodField()
     pending_commands = serializers.SerializerMethodField()
+    active_threats = serializers.SerializerMethodField()
 
     class Meta:
         model = CycleStation
@@ -17,13 +18,20 @@ class CycleStationSerializer(serializers.ModelSerializer):
             'watch_dir', 'dest_dir', 'max_cycles', 'settle_seconds', 'tester_process_name', 'is_active',
             'config_version',
             'counter', 'limit_reached', 'worker_alive', 'worker_paused', 'last_cycle_at', 'last_seen_at',
-            'online', 'pending_commands', 'created_at', 'updated_at',
+            'last_ip', 'last_hostname',
+            'online', 'pending_commands', 'active_threats', 'created_at', 'updated_at',
         ]
         read_only_fields = ['config_version', 'counter', 'worker_alive', 'worker_paused',
-                            'last_cycle_at', 'last_seen_at', 'created_at', 'updated_at']
+                            'last_cycle_at', 'last_seen_at', 'last_ip', 'last_hostname', 'created_at', 'updated_at']
 
     def get_online(self, obj) -> bool:
         return is_online(obj)
+
+    def get_active_threats(self, obj) -> int:
+        annotated = getattr(obj, 'active_threat_count', None)
+        if annotated is not None:
+            return annotated
+        return obj.events.filter(kind__in=CycleStationEvent.THREAT_KINDS, acknowledged_at__isnull=True).count()
 
     def get_pending_commands(self, obj) -> list[str]:
         commands = getattr(obj, 'pending_command_list', None)
@@ -77,18 +85,28 @@ class CycleStationSerializer(serializers.ModelSerializer):
         return data
 
 
+def _display_name(user) -> str | None:
+    if not user:
+        return None
+    return f'{user.first_name} {user.last_name}'.strip() or user.username
+
+
 class CycleStationEventSerializer(serializers.ModelSerializer):
     kind_display = serializers.CharField(source='get_kind_display', read_only=True)
+    is_threat = serializers.BooleanField(read_only=True)
     user_name = serializers.SerializerMethodField()
+    acknowledged_by_name = serializers.SerializerMethodField()
 
     class Meta:
         model = CycleStationEvent
-        fields = ['id', 'kind', 'kind_display', 'message', 'counter', 'user_name', 'created_at']
+        fields = ['id', 'kind', 'kind_display', 'is_threat', 'message', 'counter', 'user_name', 'created_at',
+                  'acknowledged_at', 'acknowledged_by_name']
 
     def get_user_name(self, obj) -> str | None:
-        if not obj.user:
-            return None
-        return f'{obj.user.first_name} {obj.user.last_name}'.strip() or obj.user.username
+        return _display_name(obj.user)
+
+    def get_acknowledged_by_name(self, obj) -> str | None:
+        return _display_name(obj.acknowledged_by)
 
 
 class CycleStationCommandSerializer(serializers.ModelSerializer):
@@ -111,6 +129,8 @@ class AgentStatusSerializer(serializers.Serializer):
     worker_alive = serializers.BooleanField()
     worker_paused = serializers.BooleanField()
     last_cycle_at = serializers.DateTimeField(required=False, allow_null=True)
+    # Nazwa komputera stanowiska (socket.gethostname()) – IP backend bierze z połączenia
+    hostname = serializers.CharField(max_length=255, required=False, allow_blank=True, default='')
 
 
 class AgentEventSerializer(serializers.Serializer):

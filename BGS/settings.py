@@ -138,3 +138,5 @@ DOC_CONVERTER_STALE_MINUTES = int(os.getenv('DOC_CONVERTER_STALE_MINUTES', '15')
 
 # --- UR::Cycle Guard – stanowisko uznajemy za offline, gdy master nie raportował przez tyle sekund ---
 CYCLE_GUARD_OFFLINE_SECONDS = int(os.getenv('CYCLE_GUARD_OFFLINE_SECONDS', '30'))
+# Inny komputer z tym samym kluczem w tym oknie = klucz działa na dwóch komputerach naraz (a nie wymiana komputera)
+CYCLE_GUARD_KEY_CONFLICT_SECONDS = int(os.getenv('CYCLE_GUARD_KEY_CONFLICT_SECONDS', '120'))

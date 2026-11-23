@@ -286,10 +286,6 @@ class WorkshopInspectionsPresetField(BaseModel):
     type = models.CharField(choices=AvaibleTypes, max_length=5)
 
 
-# --- UR::Cycle Guard – licznik cykli stanowiska (master + worker na komputerze stanowiska) ---
-# Komentarz -> worker co paczkę plików dolicza +1 i przenosi pliki, master pobiera stąd konfigurację
-# i polecenia (zerowanie, reset mistrza) i raportuje stan. Po osiągnięciu max_cycles produkcja stoi.
-
 def hash_station_key(raw_key: str) -> str:
     return hashlib.sha256(raw_key.encode()).hexdigest()
 
@@ -320,6 +316,9 @@ class CycleStation(BaseModel):
     worker_paused = models.BooleanField(default=False)
     last_cycle_at = models.DateTimeField(null=True, blank=True)
     last_seen_at = models.DateTimeField(null=True, blank=True)
+    # Skąd ostatnio zgłosił się master – tylko informacyjnie, klucz nie jest przypisany do IP (DHCP)
+    last_ip = models.GenericIPAddressField(null=True, blank=True)
+    last_hostname = models.CharField(max_length=255, blank=True, default='')
 
     class Meta:
         ordering = ['name']
@@ -367,16 +366,28 @@ class CycleStationEvent(BaseModel):
         TESTER_CLOSED = 'TESTER_CLOSED', 'Zamknięto aplikację testującą'
         CONFIG_CHANGED = 'CONFIG_CHANGED', 'Zmiana konfiguracji'
         ERROR = 'ERROR', 'Błąd stanowiska'
+        KEY_CONFLICT = 'KEY_CONFLICT', 'Klucz używany na dwóch komputerach'
+        HOST_CHANGED = 'HOST_CHANGED', 'Zmiana komputera stanowiska'
 
     # Rodzaje, które master może zgłosić sam (reszta powstaje w backendzie)
     AGENT_KINDS = (Kind.MASTER_RESTARTED, Kind.WORKER_RESTARTED, Kind.BACKEND_UNAVAILABLE,
                    Kind.TESTER_CLOSED, Kind.ERROR)
+    # Zagrożenia – widoczne w panelu, dopóki ktoś ich nie potwierdzi
+    THREAT_KINDS = (Kind.KEY_CONFLICT, Kind.HOST_CHANGED, Kind.BACKEND_UNAVAILABLE,
+                    Kind.WORKER_RESTARTED, Kind.ERROR)
 
     station = models.ForeignKey(CycleStation, on_delete=models.CASCADE, related_name='events')
     kind = models.CharField(max_length=24, choices=Kind)
     message = models.CharField(max_length=500, blank=True, default='')
     counter = models.PositiveIntegerField(null=True, blank=True)
     user = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True)
+    acknowledged_at = models.DateTimeField(null=True, blank=True)
+    acknowledged_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True,
+                                        related_name='acknowledged_cycle_events')
+
+    @property
+    def is_threat(self) -> bool:
+        return self.kind in self.THREAT_KINDS
 
     class Meta:
         ordering = ['-created_at']

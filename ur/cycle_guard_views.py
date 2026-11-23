@@ -1,4 +1,4 @@
-from django.db.models import Prefetch
+from django.db.models import Count, Prefetch, Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status, viewsets
@@ -7,7 +7,8 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .cycle_guard import CycleStationKeyAuthentication, ack_command, apply_agent_status, issue_command, pending_commands
+from .cycle_guard import (CycleStationKeyAuthentication, ack_command, acknowledge_threat, apply_agent_status,
+                          issue_command, pending_commands)
 from .cycle_guard_serializers import (AgentConfigSerializer, AgentEventSerializer, AgentStatusSerializer,
                                       CycleStationCommandSerializer, CycleStationEventSerializer, CycleStationSerializer)
 from .models import CycleStation, CycleStationCommand, CycleStationEvent
@@ -31,7 +32,9 @@ class CycleStationViewSet(viewsets.ModelViewSet):
         return CycleStation.objects.select_related('machine').prefetch_related(
             Prefetch('commands', queryset=CycleStationCommand.objects.filter(acked_at__isnull=True),
                      to_attr='pending_command_list')
-        )
+        ).annotate(active_threat_count=Count(
+            'events', filter=Q(events__kind__in=CycleStationEvent.THREAT_KINDS, events__acknowledged_at__isnull=True)
+        ))
 
     def _command(self, request, command_type):
         station = self.get_object()
@@ -64,8 +67,26 @@ class CycleStationViewSet(viewsets.ModelViewSet):
             limit = min(int(request.query_params.get('limit', EVENTS_DEFAULT_LIMIT)), EVENTS_MAX_LIMIT)
         except ValueError:
             limit = EVENTS_DEFAULT_LIMIT
-        events = station.events.select_related('user')[:max(limit, 1)]
+        events = station.events.select_related('user', 'acknowledged_by')[:max(limit, 1)]
         return Response(CycleStationEventSerializer(events, many=True).data)
+
+    @action(detail=True, methods=['get'])
+    def threats(self, request, pk=None):
+        """Zagrożenia stanowiska – domyślnie tylko niepotwierdzone (?all=1 – także potwierdzone)."""
+        station = self.get_object()
+        threats = station.events.select_related('user', 'acknowledged_by').filter(
+            kind__in=CycleStationEvent.THREAT_KINDS
+        )
+        if request.query_params.get('all') not in ('1', 'true'):
+            threats = threats.filter(acknowledged_at__isnull=True)
+        return Response(CycleStationEventSerializer(threats[:EVENTS_MAX_LIMIT], many=True).data)
+
+    @action(detail=True, methods=['post'], url_path=r'threats/(?P<event_id>\d+)/acknowledge')
+    def acknowledge_threat(self, request, pk=None, event_id=None):
+        """Potwierdzenie zagrożenia – znika z listy aktywnych, zostaje w historii z informacją kto i kiedy."""
+        station = self.get_object()
+        event = get_object_or_404(station.events, pk=event_id, kind__in=CycleStationEvent.THREAT_KINDS)
+        return Response(CycleStationEventSerializer(acknowledge_threat(event, request.user)).data)
 
 
 # --- Agent (aplikacja master na stanowisku, klucz X-Api-Key) ---
@@ -100,7 +121,8 @@ class AgentStatusView(AgentBaseView):
     def post(self, request):
         serializer = AgentStatusSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        station = apply_agent_status(self.station, serializer.validated_data)
+        # REMOTE_ADDR – w sieci lokalnej bez proxy to faktyczny adres stanowiska
+        station = apply_agent_status(self.station, serializer.validated_data, ip=request.META.get('REMOTE_ADDR'))
         return Response({
             'config_version': station.config_version,
             'limit_reached': station.limit_reached,
