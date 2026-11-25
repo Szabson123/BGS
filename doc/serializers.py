@@ -4,11 +4,16 @@ import os
 from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.db.models import Max
+from django.utils import timezone
 from rest_framework import serializers
 
-from .models import Family, Operation, Phase, Factory, Department, Document, DocumentVersion, ApprovalStep, Notification
+from .models import (
+    Family, Operation, Phase, Factory, Department, Document, DocumentVersion, ApprovalStep, Notification, ChangeType,
+    StepAssignmentLog,
+)
 from .roles import (
-    DOC_ROLES, DOC_SECTIONS, DOC_MANAGERS, SECTION_MANAGERS, is_managed, managed_sections, member_sections, section_managers, section_people,
+    DOC_ROLES, DOC_SECTIONS, DOC_MANAGERS, is_managed, is_doc_admin, managed_sections, member_sections,
+    section_people,
 )
 from .notifications import notify_active_steps
 from .conversion import can_retry, needs_conversion, request_conversion
@@ -48,6 +53,44 @@ class DepartmentSerializer(serializers.ModelSerializer):
         fields = ['id', 'name', 'is_active']
 
 
+def validate_section_list(data, allow_empty=False) -> list[str]:
+    """Lista sekcji w kolejności akceptacji: znane klucze, bez powtórzeń."""
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except ValueError:
+            raise serializers.ValidationError('Nieprawidłowa ścieżka akceptacji.')
+    if not isinstance(data, list) or not all(isinstance(item, str) for item in data):
+        raise serializers.ValidationError('Nieprawidłowa ścieżka akceptacji.')
+    if not data and not allow_empty:
+        raise serializers.ValidationError('Dodaj co najmniej jeden krok akceptacji.')
+    unknown = [section for section in data if section not in DOC_SECTIONS]
+    if unknown:
+        raise serializers.ValidationError(f'Nieznana sekcja: {unknown[0]}.')
+    if len(set(data)) != len(data):
+        raise serializers.ValidationError('Każda sekcja może wystąpić w ścieżce tylko raz.')
+    return data
+
+
+class ChangeTypeSerializer(serializers.ModelSerializer):
+    """Typ zmiany nowej wersji (panel administratora) – sekcje akceptujące w kolejności."""
+    section_labels = serializers.SerializerMethodField()
+    is_used = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ChangeType
+        fields = ['id', 'name', 'description', 'sections', 'section_labels', 'order', 'is_active', 'is_used']
+
+    def get_section_labels(self, obj):
+        return [DOC_SECTIONS.get(section, section) for section in obj.sections]
+
+    def get_is_used(self, obj):
+        return obj.versions.exists()
+
+    def validate_sections(self, value):
+        return validate_section_list(value)
+
+
 # --- Dokumenty -------------------------------------------------------------
 
 def user_display_name(user) -> str:
@@ -57,8 +100,24 @@ def user_display_name(user) -> str:
     return full_name or user.username
 
 
-def serialize_steps(version) -> list[dict]:
-    """Kroki ścieżki akceptacji wersji (approval_steps powinny być prefetchowane)."""
+def serialize_assignment_log(step) -> list[dict]:
+    return [
+        {
+            'id': entry.id,
+            'from_name': user_display_name(entry.from_user),
+            'to_name': user_display_name(entry.to_user),
+            'by_name': user_display_name(entry.by_user),
+            'reason': entry.reason,
+            'reason_display': entry.get_reason_display(),
+            'comment': entry.comment,
+            'created_at': entry.created_at,
+        }
+        for entry in step.assignment_log.all()
+    ]
+
+
+def serialize_steps(version, user=None) -> list[dict]:
+    """Kroki ścieżki akceptacji wersji (approval_steps powinny być prefetchowane). `user` – do flagi can_reassign."""
     active_ids = {step.id for step in version.active_steps()}
     return [
         {
@@ -69,8 +128,11 @@ def serialize_steps(version) -> list[dict]:
             'status': step.status,
             'is_active': step.id in active_ids,
             'is_managed': is_managed(step.section),
+            'assigned_to_id': step.assigned_to_id,
             'assigned_to_name': user_display_name(step.assigned_to),
             'assigned_at': step.assigned_at,
+            'can_reassign': bool(user and can_reassign_step(user, step, version)),
+            'assignment_log': serialize_assignment_log(step),
             'decided_by_name': user_display_name(step.decided_by),
             'decided_at': step.decided_at,
             'comment': step.comment,
@@ -104,11 +166,12 @@ class DocumentVersionSerializer(serializers.ModelSerializer):
     pdf_url = serializers.SerializerMethodField()
     conversion_status_display = serializers.CharField(source='get_conversion_status_display', read_only=True)
     can_retry_conversion = serializers.SerializerMethodField()
+    change_type = serializers.SerializerMethodField()
 
     class Meta:
         model = DocumentVersion
         fields = [
-            'id', 'version_number', 'original_filename', 'file_url', 'change_description',
+            'id', 'version_number', 'original_filename', 'file_url', 'change_description', 'change_type',
             'status', 'status_display', 'uploaded_by_name', 'created_at',
             'decided_by_name', 'decided_at', 'decision_comment', 'approval_steps',
             'pdf_url', 'conversion_status', 'conversion_status_display', 'conversion_error', 'can_retry_conversion',
@@ -121,7 +184,11 @@ class DocumentVersionSerializer(serializers.ModelSerializer):
         return can_retry(obj)
 
     def get_approval_steps(self, obj):
-        return serialize_steps(obj)
+        request = self.context.get('request')
+        return serialize_steps(obj, request.user if request else None)
+
+    def get_change_type(self, obj):
+        return {'id': obj.change_type.id, 'name': obj.change_type.name} if obj.change_type else None
 
     def get_uploaded_by_name(self, obj):
         return user_display_name(obj.uploaded_by)
@@ -146,13 +213,23 @@ class DocumentListSerializer(serializers.ModelSerializer):
     latest_version = serializers.SerializerMethodField()
     current_version_number = serializers.SerializerMethodField()
     approval_path = serializers.SerializerMethodField()
+    can_edit = serializers.SerializerMethodField()
 
     class Meta:
         model = Document
         fields = [
             'id', 'number', 'title', 'family', 'operation', 'phase', 'factory', 'department',
-            'created_by_name', 'created_at', 'latest_version', 'current_version_number', 'approval_path',
+            'created_by_name', 'created_at', 'latest_version', 'current_version_number', 'approval_path', 'can_edit',
         ]
+
+    def _request_user(self):
+        request = self.context.get('request')
+        return request.user if request else None
+
+    def get_can_edit(self, obj):
+        """Nowe wersje dodaje twórca dokumentu albo administrator; cudze instrukcje są tylko do podglądu."""
+        user = self._request_user()
+        return bool(user and (obj.created_by_id == user.id or is_doc_admin(user)))
 
     def get_family(self, obj):
         family = obj.phase.operation.family
@@ -183,7 +260,8 @@ class DocumentListSerializer(serializers.ModelSerializer):
             'status': latest.status,
             'status_display': latest.get_status_display(),
             'created_at': latest.created_at,
-            'approval_steps': serialize_steps(latest),
+            'change_type': {'id': latest.change_type.id, 'name': latest.change_type.name} if latest.change_type else None,
+            'approval_steps': serialize_steps(latest, self._request_user()),
         }
 
     def get_approval_path(self, obj):
@@ -226,29 +304,12 @@ class ApprovalPathField(serializers.Field):
         'unknown': 'Nieznana sekcja: {section}.',
         'duplicate': 'Każda sekcja może wystąpić w ścieżce tylko raz.',
         'no_members': 'Sekcja {section} nie ma żadnej aktywnej osoby – dokument nie mógłby zostać zaakceptowany.',
-        'no_manager': 'Sekcja {section} nie ma aktywnego managera – nikt nie przypisałby osoby do akceptacji.',
     }
 
     def to_internal_value(self, data):
-        if isinstance(data, str):
-            try:
-                data = json.loads(data)
-            except ValueError:
-                self.fail('invalid')
-        if not isinstance(data, list) or not all(isinstance(item, str) for item in data):
-            self.fail('invalid')
-        if not data:
-            self.fail('empty')
+        data = validate_section_list(data)
         for section in data:
-            if section not in DOC_SECTIONS:
-                self.fail('unknown', section=section)
-        if len(set(data)) != len(data):
-            self.fail('duplicate')
-        for section in data:
-            if is_managed(section):
-                if not section_managers(section).exists():
-                    self.fail('no_manager', section=DOC_SECTIONS[section])
-            elif not User.objects.filter(groups__name=section, is_active=True).exists():
+            if not section_people(section).exists():
                 self.fail('no_members', section=DOC_SECTIONS[section])
         return data
 
@@ -256,7 +317,47 @@ class ApprovalPathField(serializers.Field):
         return value
 
 
-def _create_version(document, file, change_description, approval_path, user) -> DocumentVersion:
+class AssigneesField(serializers.Field):
+    """
+    Osoby wybrane przez twórcę dla sekcji z managerem: {"doc_quality": <id użytkownika>, ...}.
+    Przy wysyłce multipart przychodzi jako tekst JSON.
+    """
+    def to_internal_value(self, data):
+        if isinstance(data, str):
+            try:
+                data = json.loads(data or '{}')
+            except ValueError:
+                raise serializers.ValidationError('Nieprawidłowa lista osób.')
+        if not isinstance(data, dict):
+            raise serializers.ValidationError('Nieprawidłowa lista osób.')
+        try:
+            return {str(section): int(user_id) for section, user_id in data.items() if user_id not in (None, '')}
+        except (TypeError, ValueError):
+            raise serializers.ValidationError('Nieprawidłowa lista osób.')
+
+    def to_representation(self, value):
+        return value
+
+
+def resolve_assignees(path: list[str], assignees: dict) -> dict:
+    """Każda sekcja z managerem w ścieżce musi mieć wybraną aktywną osobę z tej sekcji."""
+    errors, resolved = [], {}
+    for section in path:
+        if not is_managed(section):
+            continue
+        user_id = assignees.get(section)
+        person = section_people(section).filter(pk=user_id).first() if user_id else None
+        if not person:
+            errors.append(f'Wybierz osobę z sekcji {DOC_SECTIONS[section]}, która zaakceptuje instrukcję.')
+        else:
+            resolved[section] = person
+    if errors:
+        raise serializers.ValidationError({'assignees': errors})
+    return resolved
+
+
+def _create_version(document, file, change_description, approval_path, user, assignees=None,
+                    change_type=None) -> DocumentVersion:
     next_number = (document.versions.aggregate(m=Max('version_number'))['m'] or 0) + 1
     version = DocumentVersion.objects.create(
         document=document,
@@ -264,11 +365,21 @@ def _create_version(document, file, change_description, approval_path, user) -> 
         file=file,
         original_filename=os.path.basename(file.name),
         change_description=change_description,
+        change_type=change_type,
         uploaded_by=user,
     )
-    ApprovalStep.objects.bulk_create([
-        ApprovalStep(version=version, order=index, section=section)
+    assignees = assignees or {}
+    now = timezone.now()
+    steps = ApprovalStep.objects.bulk_create([
+        ApprovalStep(
+            version=version, order=index, section=section, assigned_to=assignees.get(section),
+            assigned_by=user if section in assignees else None, assigned_at=now if section in assignees else None,
+        )
         for index, section in enumerate(approval_path, start=1)
+    ])
+    StepAssignmentLog.objects.bulk_create([
+        StepAssignmentLog(step=step, to_user=step.assigned_to, by_user=user, reason=StepAssignmentLog.Reason.CREATED)
+        for step in steps if step.assigned_to
     ])
     if needs_conversion(version.original_filename):
         request_conversion(version)
@@ -304,8 +415,10 @@ class DocumentCreateSerializer(serializers.Serializer):
     file = serializers.FileField()
     change_description = serializers.CharField(required=False, allow_blank=True, default='')
     approval_path = ApprovalPathField()
+    assignees = AssigneesField(required=False, default=dict)
 
     def validate(self, attrs):
+        attrs['assignees'] = resolve_assignees(attrs['approval_path'], attrs.get('assignees') or {})
         names = {key: attrs.pop(f'{key}_name', '') for key in ('family', 'operation', 'phase')}
         family, operation = attrs.pop('family', None), attrs.pop('operation', None)
         if attrs.get('phase'):
@@ -342,56 +455,44 @@ class DocumentCreateSerializer(serializers.Serializer):
         file = validated_data.pop('file')
         change_description = validated_data.pop('change_description')
         approval_path = validated_data.pop('approval_path')
+        assignees = validated_data.pop('assignees')
         new_place = validated_data.pop('_new_place', None)
         with transaction.atomic():
             if new_place:
                 validated_data['phase'] = self._create_place(new_place)
             document = Document.objects.create(created_by=user, **validated_data)
-            _create_version(document, file, change_description, approval_path, user)
+            _create_version(document, file, change_description, approval_path, user, assignees)
         return document
 
 
-def document_approval_path(document) -> list[str]:
-    """
-    Ścieżka akceptacji dokumentu – ustalona przy pierwszej wersji ze ścieżką i niezmienna dla kolejnych.
-    Pusta lista oznacza dokument sprzed wprowadzenia ścieżek (wtedy ścieżkę wybiera się raz, przy nowej wersji).
-    """
-    version = (
-        document.versions.filter(approval_steps__isnull=False).distinct().order_by('-version_number').first()
-    )
-    if not version:
-        return []
-    return list(version.approval_steps.order_by('order', 'id').values_list('section', flat=True))
-
-
 class DocumentVersionCreateSerializer(serializers.Serializer):
-    """Nowa wersja istniejącego dokumentu – ścieżka akceptacji przechodzi z poprzedniej wersji bez zmian."""
+    """
+    Nowa wersja istniejącego dokumentu. Typ zmiany (ustala administrator) wyznacza sekcje akceptujące,
+    a twórca wybiera osoby dla sekcji z managerem.
+    """
     file = serializers.FileField()
     # Przy nowej wersji opis zmian jest obowiązkowy (pierwsza wersja dokumentu go nie wymaga)
     change_description = serializers.CharField(error_messages={
         'required': 'Opisz, co zmieniło się w tej wersji.',
         'blank': 'Opisz, co zmieniło się w tej wersji.',
     })
-    approval_path = ApprovalPathField(required=False)
+    change_type = serializers.PrimaryKeyRelatedField(
+        queryset=ChangeType.objects.filter(is_active=True),
+        error_messages={'required': 'Wybierz typ zmiany.', 'null': 'Wybierz typ zmiany.',
+                        'does_not_exist': 'Ten typ zmiany nie jest już dostępny.'},
+    )
+    assignees = AssigneesField(required=False, default=dict)
 
     def validate(self, attrs):
-        document = self.context['document']
-        _validate_has_no_pending(document)
-
-        locked_path = document_approval_path(document)
-        if locked_path:
-            sent_path = attrs.get('approval_path')
-            if sent_path is not None and sent_path != locked_path:
-                raise serializers.ValidationError(
-                    {'approval_path': 'Ścieżki akceptacji nie można zmienić przy nowej wersji dokumentu.'}
-                )
-            # Sekcja mogła w międzyczasie zostać bez ludzi – wtedy nikt nie zaakceptowałby wersji
-            ApprovalPathField().run_validation(locked_path)
-            attrs['approval_path'] = locked_path
-        elif 'approval_path' not in attrs:
-            raise serializers.ValidationError(
-                {'approval_path': 'Ten dokument nie ma jeszcze ścieżki akceptacji – wybierz ją.'}
-            )
+        _validate_has_no_pending(self.context['document'])
+        change_type = attrs['change_type']
+        try:
+            # Sekcja z typu mogła w międzyczasie zostać bez ludzi – wtedy nikt nie zaakceptowałby wersji
+            path = ApprovalPathField().run_validation(change_type.sections)
+        except serializers.ValidationError as exc:
+            raise serializers.ValidationError({'change_type': exc.detail})
+        attrs['approval_path'] = path
+        attrs['assignees'] = resolve_assignees(path, attrs.get('assignees') or {})
         return attrs
 
     def create(self, validated_data):
@@ -402,12 +503,43 @@ class DocumentVersionCreateSerializer(serializers.Serializer):
                 validated_data['change_description'],
                 validated_data['approval_path'],
                 self.context['request'].user,
+                validated_data['assignees'],
+                validated_data['change_type'],
             )
 
 
-def can_assign_step(user, step) -> bool:
-    """Wskazać osobę może manager sekcji kroku (tylko w sekcjach z managerem)."""
-    return is_managed(step.section) and step.section in managed_sections(user)
+def is_document_author(user, version) -> bool:
+    return user.id in (version.document.created_by_id, version.uploaded_by_id)
+
+
+def can_reassign_step(user, step, version=None) -> bool:
+    """
+    Zmienić osobę przy oczekującym kroku sekcji z managerem może: wskazana osoba (przekierowanie w sekcji),
+    manager sekcji, twórca instrukcji i administrator DOC.
+    """
+    version = version or step.version
+    if not is_managed(step.section) or step.status != ApprovalStep.Status.PENDING:
+        return False
+    if version.status != DocumentVersion.Status.PENDING:
+        return False
+    return (
+        step.assigned_to_id == user.id
+        or step.section in managed_sections(user)
+        or is_document_author(user, version)
+        or is_doc_admin(user)
+    )
+
+
+def reassign_reason(user, step, version) -> str:
+    Reason = StepAssignmentLog.Reason
+    # Kolejność: przekierowanie przez wskazaną osobę, zmiana przez twórcę (nawet jeśli jest też managerem), manager
+    if step.assigned_to_id == user.id:
+        return Reason.FORWARD
+    if is_document_author(user, version):
+        return Reason.AUTHOR
+    if step.section in managed_sections(user):
+        return Reason.MANAGER
+    return Reason.ADMIN
 
 
 def can_decide_step(user, step) -> bool:
@@ -431,15 +563,15 @@ class PendingApprovalSerializer(serializers.ModelSerializer):
     steps = serializers.SerializerMethodField()
     is_managed = serializers.SerializerMethodField()
     assigned_to = serializers.SerializerMethodField()
-    can_assign = serializers.SerializerMethodField()
+    can_reassign = serializers.SerializerMethodField()
     can_decide = serializers.SerializerMethodField()
-    assignees = serializers.SerializerMethodField()
+    is_my_team = serializers.SerializerMethodField()
 
     class Meta:
         model = ApprovalStep
         fields = [
             'id', 'order', 'section', 'section_label', 'document', 'version', 'steps',
-            'is_managed', 'assigned_to', 'assigned_at', 'can_assign', 'can_decide', 'assignees',
+            'is_managed', 'assigned_to', 'assigned_at', 'can_reassign', 'can_decide', 'is_my_team',
         ]
 
     def _user(self):
@@ -454,32 +586,18 @@ class PendingApprovalSerializer(serializers.ModelSerializer):
             return None
         return {'id': obj.assigned_to.id, 'name': user_display_name(obj.assigned_to)}
 
-    def get_can_assign(self, obj):
+    def get_can_reassign(self, obj):
         user = self._user()
-        return bool(user and can_assign_step(user, obj))
+        return bool(user and can_reassign_step(user, obj))
 
     def get_can_decide(self, obj):
         user = self._user()
         return bool(user and can_decide_step(user, obj))
 
-    def get_assignees(self, obj):
-        """Osoby do wyboru przy przypisaniu – tylko dla managera sekcji."""
+    def get_is_my_team(self, obj):
+        """Krok sekcji, której użytkownik jest managerem, a rozpatruje go ktoś inny (lista „Mój zespół”)."""
         user = self._user()
-        if not user or not can_assign_step(user, obj):
-            return []
-        cache = self.context.setdefault('_section_people', {})
-        if obj.section not in cache:
-            people = section_people(obj.section).prefetch_related('groups').order_by('last_name', 'first_name', 'username')
-            manager_group = SECTION_MANAGERS[obj.section]
-            cache[obj.section] = [
-                {
-                    'id': person.id,
-                    'name': user_display_name(person),
-                    'is_manager': any(group.name == manager_group for group in person.groups.all()),
-                }
-                for person in people
-            ]
-        return cache[obj.section]
+        return bool(user and obj.section in managed_sections(user) and obj.assigned_to_id != user.id)
 
     def get_section_label(self, obj):
         return DOC_SECTIONS.get(obj.section, obj.section)
@@ -491,6 +609,7 @@ class PendingApprovalSerializer(serializers.ModelSerializer):
             'id': document.id,
             'number': document.number,
             'title': document.title,
+            'family_id': phase.operation.family_id,
             'family': phase.operation.family.name,
             'operation': phase.operation.name,
             'phase': phase.name,
@@ -512,7 +631,7 @@ class PendingApprovalSerializer(serializers.ModelSerializer):
         }
 
     def get_steps(self, obj):
-        return serialize_steps(obj.version)
+        return serialize_steps(obj.version, self._user())
 
 
 class OperatorDocumentSerializer(serializers.ModelSerializer):

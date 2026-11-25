@@ -8,7 +8,7 @@ from .views import (
     FamilyViewSet, OperationViewSet, PhaseViewSet, FactoryViewSet, DepartmentViewSet,
     DocumentViewSet, DocumentVersionFileView, PendingApprovalsView, ApprovalStepDecisionView, StepAttachmentFileView,
     OperatorDocumentsView, DocUserViewSet, ConversionCallbackView, RetryConversionView,
-    AssignStepView, NotificationsView, NotificationReadView, OperatorDictionaryView, OperatorVersionFileView,
+    AssignStepView, SectionPeopleView, ChangeTypeViewSet, NotificationsView, NotificationReadView, OperatorDictionaryView, OperatorVersionFileView,
 )
 
 router = DefaultRouter()
@@ -17,6 +17,7 @@ router.register(r'operations', OperationViewSet, basename='doc-operations')
 router.register(r'phases', PhaseViewSet, basename='doc-phases')
 router.register(r'factories', FactoryViewSet, basename='doc-factories')
 router.register(r'departments', DepartmentViewSet, basename='doc-departments')
+router.register(r'change-types', ChangeTypeViewSet, basename='doc-change-types')
 router.register(r'documents', DocumentViewSet, basename='doc-documents')
 router.register(r'admin/users', DocUserViewSet, basename='doc-admin-users')
 
@@ -38,6 +39,7 @@ urlpatterns = [
     path('approvals/', PendingApprovalsView.as_view(), name='doc-pending-approvals'),
     path('step-attachments/<int:attachment_id>/file/', StepAttachmentFileView.as_view(), name='doc-step-attachment-file'),
     path('approval-steps/<int:step_id>/assign/', AssignStepView.as_view(), name='doc-step-assign'),
+    path('section-people/', SectionPeopleView.as_view(), name='doc-section-people'),
     path('notifications/', NotificationsView.as_view(), name='doc-notifications'),
     path('notifications/read-all/', NotificationReadView.as_view(), name='doc-notifications-read-all'),
     path('notifications/<int:notification_id>/read/', NotificationReadView.as_view(), name='doc-notification-read'),

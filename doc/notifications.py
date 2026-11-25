@@ -1,8 +1,9 @@
 """
 Powiadomienia modułu DOC – tworzone w tej samej transakcji co zdarzenie, które je wywołało.
 
-- krok staje się aktywny: managerowie sekcji (TO_ASSIGN) albo, w sekcji bez managera, jej członkowie (TO_DECIDE)
-- manager wskazał osobę: ta osoba (ASSIGNED)
+- krok staje się aktywny: wskazana osoba (ASSIGNED); w sekcji z managerem bez wskazanej osoby – managerowie
+  (TO_ASSIGN); w sekcji bez managera – jej członkowie (TO_DECIDE)
+- zmiana osoby (manager / przekierowanie / twórca) przy aktywnym kroku: nowa osoba (ASSIGNED)
 - wersja zatwierdzona / odrzucona: dodający wersję (APPROVED / REJECTED)
 Wykonawca zdarzenia nie dostaje powiadomienia o własnej akcji.
 """
@@ -34,7 +35,10 @@ def notify_active_steps(version, actor=None) -> None:
     """Kroki, które właśnie stały się aktywne, trafiają do swoich sekcji."""
     for step in version.active_steps():
         section = DOC_SECTIONS.get(step.section, step.section)
-        if is_managed(step.section):
+        if step.assigned_to_id:
+            _create([step.assigned_to], Kind.ASSIGNED,
+                    f"{_label(version)} czeka na Twoją akceptację ({section}).", version, step, actor)
+        elif is_managed(step.section):
             _create(section_managers(step.section), Kind.TO_ASSIGN,
                     f"{_label(version)} – wskaż osobę do akceptacji ({section}).", version, step, actor)
         else:
@@ -43,10 +47,13 @@ def notify_active_steps(version, actor=None) -> None:
                     f"{_label(version)} czeka na akceptację sekcji {section}.", version, step, actor)
 
 
-def notify_assigned(step: ApprovalStep, actor) -> None:
-    # Przypisanie załatwia „do przypisania” u wszystkich managerów sekcji
+def notify_assigned(step: ApprovalStep, actor, previous=None) -> None:
+    """Nowa osoba przy aktywnym kroku. „Do przypisania” u managerów i powiadomienie poprzedniej osoby tracą ważność."""
     mark_step_read(step, kinds=[Kind.TO_ASSIGN])
+    if previous:
+        Notification.objects.filter(step=step, recipient=previous, read_at__isnull=True).update(read_at=timezone.now())
     section = DOC_SECTIONS.get(step.section, step.section)
+    # Kto przekazał – widać w powiadomieniu (actor)
     _create([step.assigned_to], Kind.ASSIGNED,
             f"{_label(step.version)} – przypisano Ci akceptację ({section}).", step.version, step, actor)
 

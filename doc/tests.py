@@ -13,7 +13,10 @@ from django.test import override_settings
 from django.utils import timezone
 from rest_framework.test import APITestCase
 
-from .models import Family, Operation, Phase, Factory, Department, DocumentVersion, ApprovalStep, Notification
+from .models import (
+    Family, Operation, Phase, Factory, Department, DocumentVersion, ApprovalStep, Notification, ChangeType,
+    StepAssignmentLog,
+)
 
 User = get_user_model()
 TEMP_MEDIA = tempfile.mkdtemp()
@@ -52,7 +55,10 @@ class DocApiTests(APITestCase):
     def upload(self, name='instrukcja.pdf'):
         return SimpleUploadedFile(name, b'%PDF-1.4 test', content_type='application/pdf')
 
-    def create_document(self, user=None, path=('doc_quality', 'doc_bhp')):
+    def create_document(self, user=None, path=('doc_quality', 'doc_bhp'), assignees=None):
+        """Domyślnie krok Quality rozpatruje self.quality (wybór twórcy przy wysyłce)."""
+        if assignees is None:
+            assignees = {'doc_quality': self.quality.id} if 'doc_quality' in path else {}
         self.client.force_authenticate(user or self.author)
         return self.client.post('/api/doc/documents/', {
             'title': 'Wydawanie kebaba',
@@ -62,7 +68,15 @@ class DocApiTests(APITestCase):
             'file': self.upload(),
             'change_description': 'Pierwsza wersja',
             'approval_path': json.dumps(list(path)),
+            'assignees': json.dumps(assignees),
         }, format='multipart')
+
+    def add_version(self, document_id, change_type, assignees=None, user=None, description='Poprawka'):
+        self.client.force_authenticate(user or self.author)
+        data = {'file': self.upload('v2.pdf'), 'change_description': description, 'assignees': json.dumps(assignees or {})}
+        if change_type is not None:
+            data['change_type'] = change_type.id
+        return self.client.post(f'/api/doc/documents/{document_id}/versions/', data, format='multipart')
 
     def decide(self, user, step_id, decision='approve', comment=''):
         self.client.force_authenticate(user)
@@ -103,49 +117,91 @@ class DocApiTests(APITestCase):
         document = response.json()
         self.assertEqual(document['number'], f"INS-{document['id']:04d}")
         self.assertEqual(document['latest_version']['status'], 'PENDING')
+        self.assertTrue(document['can_edit'])
 
-        sections = [step['section'] for step in document['versions'][0]['approval_steps']]
-        self.assertEqual(sections, ['doc_quality', 'doc_bhp'])
+        steps = document['versions'][0]['approval_steps']
+        self.assertEqual([step['section'] for step in steps], ['doc_quality', 'doc_bhp'])
+        # Osoba wybrana przy wysyłce jest zapisana i zalogowana
+        self.assertEqual(steps[0]['assigned_to_id'], self.quality.id)
+        self.assertEqual([e['reason'] for e in steps[0]['assignment_log']], ['CREATED'])
+        self.assertIsNone(steps[1]['assigned_to_id'])  # BHP nie ma managera – decyduje dowolna osoba z sekcji
 
+        small = ChangeType.objects.create(name='Tylko BHP', sections=['doc_bhp'])
         # Kolejna wersja zablokowana, dopóki poprzednia czeka na akceptację
-        response = self.client.post(f"/api/doc/documents/{document['id']}/versions/",
-                                    {'file': self.upload(), 'approval_path': '["doc_quality"]', 'change_description': 'X'},
-                                    format='multipart')
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.add_version(document['id'], small).status_code, 400)
 
         self.approve_all(document['versions'][0])
 
-        self.client.force_authenticate(self.author)
-        # Opis zmian jest obowiązkowy przy nowej wersji
-        response = self.client.post(f"/api/doc/documents/{document['id']}/versions/",
-                                    {'file': self.upload('v2.xlsx'), 'change_description': '  '}, format='multipart')
-        self.assertEqual(response.status_code, 400)
+        # Opis zmian i typ zmiany są obowiązkowe
+        response = self.add_version(document['id'], small, description='  ')
         self.assertIn('change_description', response.json())
-
-        # Ścieżki nie można zmienić przy nowej wersji
-        response = self.client.post(f"/api/doc/documents/{document['id']}/versions/",
-                                    {'file': self.upload('v2.xlsx'), 'approval_path': '["doc_bhp"]',
-                                     'change_description': 'Poprawka'},
-                                    format='multipart')
+        response = self.add_version(document['id'], None)
         self.assertEqual(response.status_code, 400)
-        self.assertIn('nie można zmienić', response.json()['approval_path'][0])
+        self.assertIn('change_type', response.json())
 
-        # Bez ścieżki w żądaniu – przechodzi z poprzedniej wersji
-        response = self.client.post(f"/api/doc/documents/{document['id']}/versions/",
-                                    {'file': self.upload('v2.xlsx'), 'change_description': 'Poprawka'},
-                                    format='multipart')
+        response = self.add_version(document['id'], small)
         self.assertEqual(response.status_code, 201, response.content)
         body = response.json()
         self.assertEqual(body['latest_version']['version_number'], 2)
+        self.assertEqual(body['latest_version']['change_type']['name'], 'Tylko BHP')
         self.assertEqual(body['current_version_number'], 1)
-        self.assertEqual(body['approval_path'], ['doc_quality', 'doc_bhp'])
-        self.assertEqual([s['section'] for s in body['latest_version']['approval_steps']], ['doc_quality', 'doc_bhp'])
+        self.assertEqual([s['section'] for s in body['latest_version']['approval_steps']], ['doc_bhp'])
+
+    def test_change_type_path_requires_people_and_assignees(self):
+        document = self.create_document(path=('doc_bhp',)).json()
+        DocumentVersion.objects.filter(pk=document['versions'][0]['id']).update(status='APPROVED')
+
+        # Domyślne typy z migracji: Mała zmiana = Engineering + Production – nikogo tam nie ma
+        small = ChangeType.objects.get(name='Mała zmiana')
+        self.assertEqual(small.sections, ['doc_engineering', 'doc_production'])
+        response = self.add_version(document['id'], small)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('Engineering', str(response.json()['change_type']))
+
+        quality_type = ChangeType.objects.create(name='Q', sections=['doc_quality', 'doc_bhp'])
+        # Sekcja z managerem wymaga wybranej osoby – i to z tej sekcji
+        self.assertIn('assignees', self.add_version(document['id'], quality_type).json())
+        self.assertIn('assignees', self.add_version(document['id'], quality_type, {'doc_quality': self.bhp.id}).json())
+        response = self.add_version(document['id'], quality_type, {'doc_quality': self.quality_member.id})
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(response.json()['latest_version']['approval_steps'][0]['assigned_to_id'], self.quality_member.id)
+
+        # Nieaktywny typ nie jest dostępny
+        ChangeType.objects.filter(pk=small.pk).update(is_active=False)
+        self.client.force_authenticate(self.author)
+        names = [t['name'] for t in self.client.get('/api/doc/change-types/?active=1').json()]
+        self.assertNotIn('Mała zmiana', names)
+
+    def test_admin_manages_change_types(self):
+        self.client.force_authenticate(self.author)
+        self.assertEqual(self.client.post('/api/doc/change-types/', {'name': 'X', 'sections': ['doc_bhp']},
+                                          format='json').status_code, 403)
+        self.client.force_authenticate(self.admin)
+        self.assertEqual(self.client.post('/api/doc/change-types/', {'name': 'X', 'sections': []},
+                                          format='json').status_code, 400)
+        self.assertEqual(self.client.post('/api/doc/change-types/', {'name': 'X', 'sections': ['doc_bhp', 'doc_bhp']},
+                                          format='json').status_code, 400)
+        response = self.client.post('/api/doc/change-types/',
+                                    {'name': 'Zmiana BHP', 'sections': ['doc_bhp', 'doc_quality']}, format='json')
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(response.json()['section_labels'], ['BHP', 'Quality'])
+
+        # Użyty typ: nie da się usunąć, można dezaktywować
+        change_type = ChangeType.objects.get(pk=response.json()['id'])
+        document = self.create_document(path=('doc_bhp',)).json()
+        DocumentVersion.objects.filter(pk=document['versions'][0]['id']).update(status='APPROVED')
+        self.assertEqual(self.add_version(document['id'], change_type, {'doc_quality': self.quality.id}).status_code, 201)
+        self.client.force_authenticate(self.admin)
+        self.assertEqual(self.client.delete(f'/api/doc/change-types/{change_type.id}/').status_code, 400)
+        self.assertEqual(self.client.patch(f'/api/doc/change-types/{change_type.id}/', {'is_active': False},
+                                           format='json').status_code, 200)
 
     def post_with_place(self, place, user=None):
         self.client.force_authenticate(user or self.author)
         return self.client.post('/api/doc/documents/', {
             'title': 'Nowe miejsce', 'factory': self.factory.id, 'department': self.department.id,
-            'file': self.upload(), 'approval_path': json.dumps(['doc_quality']), **place,
+            'file': self.upload(), 'approval_path': json.dumps(['doc_quality']),
+            'assignees': json.dumps({'doc_quality': self.quality.id}), **place,
         }, format='multipart')
 
     def test_create_document_creates_missing_family_operation_phase(self):
@@ -188,29 +244,51 @@ class DocApiTests(APITestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn('family_name', response.json())
 
-    def test_legacy_document_without_path_gets_path_once(self):
-        """Dokument sprzed ścieżek: przy nowej wersji ścieżkę trzeba wybrać, potem jest już stała."""
+    def test_author_sees_own_documents_and_others_read_only(self):
         document = self.create_document().json()
-        ApprovalStep.objects.filter(version_id=document['versions'][0]['id']).delete()
-        DocumentVersion.objects.filter(pk=document['versions'][0]['id']).update(status='APPROVED')
-
-        self.client.force_authenticate(self.author)
-        url = f"/api/doc/documents/{document['id']}/versions/"
-        response = self.client.post(url, {'file': self.upload(), 'change_description': 'Poprawka'}, format='multipart')
-        self.assertEqual(response.status_code, 400)
-        self.assertIn('approval_path', response.json())
-        response = self.client.post(url, {'file': self.upload(), 'approval_path': '["doc_bhp"]',
-                                          'change_description': 'Poprawka'}, format='multipart')
-        self.assertEqual(response.status_code, 201, response.content)
-        self.assertEqual(response.json()['approval_path'], ['doc_bhp'])
-
-    def test_author_sees_only_own_documents_admin_sees_all(self):
-        self.create_document()
         other_author = make_user('author2', 'doc_author')
         self.client.force_authenticate(other_author)
         self.assertEqual(self.client.get('/api/doc/documents/').json(), [])
+        self.assertEqual(self.client.get('/api/doc/documents/?scope=mine').json(), [])
+
+        # „Pokaż nie moje instrukcje” – widać, ale bez możliwości zmian
+        others = self.client.get('/api/doc/documents/?scope=all').json()
+        self.assertEqual([(d['id'], d['can_edit']) for d in others], [(document['id'], False)])
+        detail = self.client.get(f"/api/doc/documents/{document['id']}/").json()
+        self.assertFalse(detail['can_edit'])
+        self.assertFalse(detail['versions'][0]['approval_steps'][0]['can_reassign'])
+        DocumentVersion.objects.filter(pk=document['versions'][0]['id']).update(status='APPROVED')
+        change_type = ChangeType.objects.create(name='BHP', sections=['doc_bhp'])
+        self.assertEqual(self.add_version(document['id'], change_type, user=other_author).status_code, 403)
+
         self.client.force_authenticate(self.admin)
         self.assertEqual(len(self.client.get('/api/doc/documents/').json()), 1)
+        self.assertEqual(self.client.get('/api/doc/documents/?scope=mine').json(), [])
+
+    def test_document_list_filters(self):
+        first = self.create_document().json()
+        second = self.create_document(path=('doc_bhp',)).json()
+        other_phase = Phase.objects.create(operation=self.phase.operation, name='Pakowanie')
+        DocumentVersion.objects.filter(pk=second['versions'][0]['id']).update(status='APPROVED')
+        from .models import Document
+        Document.objects.filter(pk=second['id']).update(phase=other_phase)
+
+        self.client.force_authenticate(self.admin)
+
+        def ids(query):
+            return [d['id'] for d in self.client.get(f'/api/doc/documents/?{query}').json()]
+
+        self.assertEqual(ids(f'phase={other_phase.id}'), [second['id']])
+        self.assertEqual(sorted(ids(f'family={self.phase.operation.family_id}')), sorted([first['id'], second['id']]))
+        self.assertEqual(ids(f'author={self.author.id}&status=PENDING'), [first['id']])
+        self.assertEqual(ids('awaiting_section=doc_quality'), [first['id']])
+        self.assertEqual(ids('awaiting_section=doc_bhp'), [])  # BHP to drugi krok – jeszcze nie jego kolej
+        self.assertEqual(ids(f'assignee={self.quality.id}'), [first['id']])
+        today = timezone.now().date().isoformat()
+        self.assertEqual(len(ids(f'date_from={today}&date_to={today}')), 2)
+        self.assertEqual(ids('date_from=2000-01-01&date_to=2000-01-02'), [])
+        authors = self.client.get('/api/doc/documents/authors/').json()
+        self.assertEqual([a['id'] for a in authors], [self.author.id])
 
     def test_operator_cannot_add_documents(self):
         self.assertEqual(self.create_document(self.operator).status_code, 403)
@@ -273,11 +351,13 @@ class DocApiTests(APITestCase):
         response = self.create_document(path=('doc_production',))
         self.assertEqual(response.status_code, 400)
         self.assertIn('Production', response.json()['approval_path'][0])
-        # Sekcja z managerem musi mieć managera – sami członkowie nie wystarczą
-        make_user('engineer', 'doc_engineering')
+        # Sekcja z managerem: wystarczą członkowie, ale twórca musi wybrać osobę
+        engineer = make_user('engineer', 'doc_engineering')
         response = self.create_document(path=('doc_engineering',))
         self.assertEqual(response.status_code, 400)
-        self.assertIn('managera', response.json()['approval_path'][0])
+        self.assertIn('Engineering', response.json()['assignees'][0])
+        self.assertEqual(self.create_document(path=('doc_engineering',),
+                                              assignees={'doc_engineering': engineer.id}).status_code, 201)
 
     def test_steps_are_approved_in_order_by_section_members(self):
         version = self.create_document().json()['versions'][0]
@@ -375,85 +455,117 @@ class DocApiTests(APITestCase):
         self.assertEqual(self.client.get('/api/doc/admin/users/').status_code, 403)
 
 
-    def assign(self, user, step_id, assignee):
+    def assign(self, user, step_id, assignee, comment=''):
         self.client.force_authenticate(user)
-        return self.client.post(f'/api/doc/approval-steps/{step_id}/assign/', {'user': assignee.id}, format='json')
+        return self.client.post(f'/api/doc/approval-steps/{step_id}/assign/',
+                                {'user': assignee.id, 'comment': comment}, format='json')
 
     def notifications(self, user):
         self.client.force_authenticate(user)
         return self.client.get('/api/doc/notifications/').json()
 
-    def test_manager_assigns_person_who_then_decides(self):
-        version = self.create_document().json()['versions'][0]
+    def test_author_picks_person_who_decides_and_can_forward(self):
+        version = self.create_document(assignees={'doc_quality': self.quality_member.id}).json()['versions'][0]
         quality_step = version['approval_steps'][0]
+        other = make_user('qmember2', 'doc_quality')
 
-        # Zwykły członek sekcji z managerem nie widzi kroku i nie może go rozpatrzyć przed przypisaniem
-        self.client.force_authenticate(self.quality_member)
+        # Wybrana osoba widzi krok i może go rozpatrzyć; inny członek sekcji – nie
+        self.client.force_authenticate(other)
         self.assertEqual(self.client.get('/api/doc/approvals/').json(), [])
-        self.assertEqual(self.decide(self.quality_member, quality_step['id']).status_code, 403)
-
-        # Manager widzi krok do przypisania z listą osób sekcji
-        self.client.force_authenticate(self.quality)
-        item = self.client.get('/api/doc/approvals/').json()[0]
-        self.assertTrue(item['can_assign'])
-        self.assertIsNone(item['assigned_to'])
-        self.assertEqual({p['name'] for p in item['assignees']}, {'quality', 'qmember'})
-
-        # Przypisać może tylko manager, i tylko osobę z sekcji
-        self.assertEqual(self.assign(self.quality_member, quality_step['id'], self.quality_member).status_code, 403)
-        self.assertEqual(self.assign(self.quality, quality_step['id'], self.bhp).status_code, 400)
-        response = self.assign(self.quality, quality_step['id'], self.quality_member)
-        self.assertEqual(response.status_code, 200, response.content)
-        self.assertEqual(response.json()['assigned_to']['id'], self.quality_member.id)
-
-        # Wskazana osoba widzi krok, może go otworzyć i rozpatrzyć
+        self.assertEqual(self.decide(other, quality_step['id']).status_code, 403)
         self.client.force_authenticate(self.quality_member)
         inbox = self.client.get('/api/doc/approvals/').json()
-        self.assertEqual([i['id'] for i in inbox], [quality_step['id']])
-        self.assertTrue(inbox[0]['can_decide'])
-        self.assertFalse(inbox[0]['can_assign'])
-        self.assertEqual(inbox[0]['assignees'], [])
+        self.assertEqual([(i['id'], i['can_decide'], i['can_reassign'], i['is_my_team']) for i in inbox],
+                         [(quality_step['id'], True, True, False)])
         self.assertEqual(self.client.get(f"/api/doc/versions/{version['id']}/file/").status_code, 200)
-        self.assertEqual(self.decide(self.quality_member, quality_step['id']).status_code, 200)
 
-        step = ApprovalStep.objects.get(pk=quality_step['id'])
-        self.assertEqual((step.status, step.decided_by, step.assigned_by), ('APPROVED', self.quality_member, self.quality))
-        # Kolejny krok (BHP, bez managera) czeka na sekcję
-        self.client.force_authenticate(self.bhp)
-        self.assertEqual(len(self.client.get('/api/doc/approvals/').json()), 1)
+        # Przekierowanie: tylko do osoby z tej samej sekcji, z komentarzem w logu
+        self.assertEqual(self.assign(self.quality_member, quality_step['id'], self.bhp).status_code, 400)
+        response = self.assign(self.quality_member, quality_step['id'], other, 'Urlop')
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()['assigned_to']['id'], other.id)
+        # Po przekierowaniu poprzednia osoba nie może już nic zmienić
+        self.assertEqual(self.assign(self.quality_member, quality_step['id'], self.quality_member).status_code, 403)
+        self.assertEqual(self.decide(self.quality_member, quality_step['id']).status_code, 403)
+        self.assertEqual(self.decide(other, quality_step['id']).status_code, 200)
 
-    def test_manager_can_decide_and_reassign_while_step_is_active(self):
-        other = make_user('qmember2', 'doc_quality')
-        quality_step = self.create_document().json()['versions'][0]['approval_steps'][0]
-        self.assertEqual(self.assign(self.quality, quality_step['id'], self.quality_member).status_code, 200)
-        self.assertEqual(self.assign(self.quality, quality_step['id'], self.quality_member).status_code, 400)
-        self.assertEqual(self.assign(self.quality, quality_step['id'], other).status_code, 200)
-        # Poprzednio wskazany traci krok
+        log = list(StepAssignmentLog.objects.filter(step_id=quality_step['id']).values_list(
+            'reason', 'from_user__username', 'to_user__username', 'by_user__username', 'comment'))
+        self.assertEqual(log, [
+            ('CREATED', None, 'qmember', 'author', ''),
+            ('FORWARD', 'qmember', 'qmember2', 'qmember', 'Urlop'),
+        ])
+        # Rozpatrzonego kroku nie da się już przekierować
+        self.assertEqual(self.assign(self.quality, quality_step['id'], self.quality_member).status_code, 403)
+
+    def test_manager_sees_team_steps_and_redirects(self):
+        version = self.create_document(assignees={'doc_quality': self.quality_member.id}).json()['versions'][0]
+        quality_step = version['approval_steps'][0]
+
+        # Manager widzi krok swojego człowieka na liście „Mój zespół”, może go przekierować albo zdecydować sam
+        self.client.force_authenticate(self.quality)
+        item = self.client.get('/api/doc/approvals/').json()[0]
+        self.assertEqual((item['is_my_team'], item['can_reassign'], item['can_decide']), (True, True, True))
+        self.assertEqual(self.assign(self.quality, quality_step['id'], self.quality).status_code, 200)
+        self.assertEqual(StepAssignmentLog.objects.filter(step_id=quality_step['id']).last().reason, 'MANAGER')
         self.client.force_authenticate(self.quality_member)
         self.assertEqual(self.client.get('/api/doc/approvals/').json(), [])
-        self.assertEqual(self.decide(self.quality_member, quality_step['id']).status_code, 403)
-        # Manager decyduje mimo przypisania
-        self.assertEqual(self.decide(self.quality, quality_step['id'], 'reject', 'Popraw').status_code, 200)
-        # Rozpatrzonego kroku nie da się już przypisać
-        self.assertEqual(self.assign(self.quality, quality_step['id'], self.quality_member).status_code, 400)
+
+    def test_author_changes_person_during_approval_and_it_is_logged(self):
+        document = self.create_document(assignees={'doc_quality': self.quality_member.id}).json()
+        quality_step = document['versions'][0]['approval_steps'][0]
+        other = make_user('qmember2', 'doc_quality')
+
+        # Twórca widzi w szczegółach, że może zmienić osobę; obcy dodający – nie
+        self.client.force_authenticate(self.author)
+        detail = self.client.get(f"/api/doc/documents/{document['id']}/").json()
+        self.assertTrue(detail['versions'][0]['approval_steps'][0]['can_reassign'])
+        stranger = make_user('author2', 'doc_author')
+        self.assertEqual(self.assign(stranger, quality_step['id'], other).status_code, 403)
+
+        response = self.assign(self.author, quality_step['id'], other, 'Kolega ma urlop')
+        self.assertEqual(response.status_code, 200, response.content)
+        self.client.force_authenticate(self.author)
+        step = self.client.get(f"/api/doc/documents/{document['id']}/").json()['versions'][0]['approval_steps'][0]
+        self.assertEqual(step['assigned_to_name'], 'qmember2')
+        self.assertEqual([(e['reason'], e['from_name'], e['to_name'], e['by_name'], e['comment'])
+                          for e in step['assignment_log']], [
+            ('CREATED', '', 'qmember', 'author', ''),
+            ('AUTHOR', 'qmember', 'qmember2', 'author', 'Kolega ma urlop'),
+        ])
+        # Nowa osoba dostaje powiadomienie, poprzednia ma je oznaczone jako przeczytane
+        self.assertEqual(self.notifications(other)['results'][0]['kind'], 'ASSIGNED')
+        self.assertEqual(self.notifications(self.quality_member)['unread_count'], 0)
+
+    def test_section_people_suggests_people_from_same_family(self):
+        zenon = make_user('zenon', 'doc_quality')
+        adam = make_user('adam', 'doc_quality')
+        for person in (zenon, zenon, adam):
+            version = self.create_document(path=('doc_quality',), assignees={'doc_quality': person.id}).json()
+            DocumentVersion.objects.filter(pk=version['versions'][0]['id']).update(status='APPROVED')
+        other_family = Family.objects.create(name='Pizza')
+
+        self.client.force_authenticate(self.author)
+        url = '/api/doc/section-people/?section=doc_quality'
+        people = self.client.get(f'{url}&family={self.phase.operation.family_id}').json()
+        self.assertEqual([(p['name'], p['suggested_count']) for p in people[:2]], [('zenon', 2), ('adam', 1)])
+        rest = [p['name'] for p in people[2:]]
+        self.assertEqual(rest, sorted(rest, key=str.lower))
+        self.assertTrue(next(p for p in people if p['name'] == 'quality')['is_manager'])
+        # Inna rodzina – brak propozycji, wszyscy alfabetycznie
+        people = self.client.get(f'{url}&family={other_family.id}').json()
+        self.assertFalse(any(p['suggested'] for p in people))
+        self.assertEqual(self.client.get('/api/doc/section-people/?section=x').status_code, 400)
 
     def test_notifications_follow_the_approval_flow(self):
-        document = self.create_document().json()
+        document = self.create_document(assignees={'doc_quality': self.quality_member.id}).json()
         quality_step, bhp_step = document['versions'][0]['approval_steps']
 
-        # Nowa wersja: manager Quality ma „do przypisania”, BHP jeszcze nic
-        data = self.notifications(self.quality)
-        self.assertEqual(data['unread_count'], 1)
-        self.assertEqual(data['results'][0]['kind'], 'TO_ASSIGN')
-        self.assertEqual(data['results'][0]['link'], '/doc/approvals')
-        self.assertEqual(self.notifications(self.bhp)['unread_count'], 0)
-        self.assertEqual(self.notifications(self.author)['unread_count'], 0)
-
-        # Przypisanie: osoba dostaje powiadomienie, „do przypisania” u managera znika z nieprzeczytanych
-        self.assign(self.quality, quality_step['id'], self.quality_member)
-        self.assertEqual(self.notifications(self.quality)['unread_count'], 0)
+        # Nowa wersja: wybrana osoba Quality od razu dostaje powiadomienie; manager i BHP – nic
         data = self.notifications(self.quality_member)
-        self.assertEqual([(n['kind'], n['is_read']) for n in data['results']], [('ASSIGNED', False)])
+        self.assertEqual([(n['kind'], n['link']) for n in data['results']], [('ASSIGNED', '/doc/approvals')])
+        self.assertEqual(self.notifications(self.quality)['unread_count'], 0)
+        self.assertEqual(self.notifications(self.bhp)['unread_count'], 0)
 
         # Decyzja: krok BHP aktywny – sekcja bez managera dostaje „do akceptacji”
         self.decide(self.quality_member, quality_step['id'])
@@ -475,17 +587,28 @@ class DocApiTests(APITestCase):
         self.assertEqual(self.client.post(f'/api/doc/notifications/{foreign.id}/read/').status_code, 204)
         self.assertEqual(self.notifications(self.author)['unread_count'], 0)
 
-    def test_self_actions_do_not_notify_and_read_all(self):
-        # Manager, który sam dodaje dokument, nie dostaje powiadomienia o własnej akcji
-        manager_author = make_user('qboss', 'doc_author', 'doc_quality_manager')
-        version = self.create_document(user=manager_author).json()['versions'][0]
-        self.assertEqual(self.notifications(manager_author)['unread_count'], 0)
-        self.assertEqual(self.notifications(self.quality)['unread_count'], 1)
-        # Przypisanie do siebie nie tworzy powiadomienia „przypisano Ci”
-        self.assign(self.quality, version['approval_steps'][0]['id'], self.quality)
-        self.assertEqual(self.notifications(self.quality)['unread_count'], 0)
+    def test_future_step_notifies_only_when_its_turn_comes(self):
+        # Krok Quality jako drugi: osoba wybrana przy wysyłce dostaje powiadomienie dopiero po BHP
+        document = self.create_document(path=('doc_bhp', 'doc_quality'),
+                                        assignees={'doc_quality': self.quality_member.id}).json()
+        bhp_step, quality_step = document['versions'][0]['approval_steps']
+        self.assertEqual(self.notifications(self.quality_member)['unread_count'], 0)
+        # Twórca może zmienić osobę zawczasu – bez powiadomienia, za to z logiem
+        other = make_user('qmember2', 'doc_quality')
+        self.assertEqual(self.assign(self.author, quality_step['id'], other).status_code, 200)
+        self.assertEqual(self.notifications(other)['unread_count'], 0)
+        self.decide(self.bhp, bhp_step['id'])
+        self.assertEqual(self.notifications(other)['results'][0]['kind'], 'ASSIGNED')
+        self.assertEqual(self.notifications(self.quality_member)['unread_count'], 0)
 
-        Notification.objects.filter(recipient=self.quality).update(read_at=None)
+    def test_self_actions_do_not_notify_and_read_all(self):
+        # Twórca, który wybiera siebie, nie dostaje powiadomienia o własnej akcji
+        manager_author = make_user('qboss', 'doc_author', 'doc_quality_manager')
+        self.create_document(user=manager_author, assignees={'doc_quality': manager_author.id})
+        self.assertEqual(self.notifications(manager_author)['unread_count'], 0)
+        self.create_document(user=manager_author, assignees={'doc_quality': self.quality.id})
+        self.assertEqual(self.notifications(self.quality)['unread_count'], 1)
+
         self.client.force_authenticate(self.quality)
         self.assertEqual(self.client.post('/api/doc/notifications/read-all/').status_code, 204)
         self.assertEqual(self.notifications(self.quality)['unread_count'], 0)
@@ -510,7 +633,7 @@ class DocConversionTests(APITestCase):
 
     def setUp(self):
         self.author = make_user('author', 'doc_author')
-        make_user('quality', 'doc_quality', 'doc_quality_manager')
+        self.quality = make_user('quality', 'doc_quality', 'doc_quality_manager')
         family = Family.objects.create(name='Kebaby')
         operation = Operation.objects.create(family=family, name='Nakładanie')
         self.phase = Phase.objects.create(operation=operation, name='Wydanie')
@@ -530,6 +653,7 @@ class DocConversionTests(APITestCase):
             response = self.client.post('/api/doc/documents/', {
                 'title': 'T', 'phase': self.phase.id, 'factory': self.factory.id, 'department': self.department.id,
                 'file': SimpleUploadedFile(filename, b'xlsx-bytes'), 'approval_path': '["doc_quality"]',
+                'assignees': json.dumps({'doc_quality': self.quality.id}),
             }, format='multipart')
         self.assertEqual(response.status_code, 201, response.content)
         return DocumentVersion.objects.get(document_id=response.json()['id']), post

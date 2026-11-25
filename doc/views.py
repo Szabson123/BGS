@@ -6,7 +6,7 @@ import string
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.db import transaction
-from django.db.models import ProtectedError, Prefetch, Q, OuterRef, Subquery
+from django.db.models import ProtectedError, Prefetch, Q, OuterRef, Subquery, Count, Max
 from django.http import FileResponse, Http404
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -22,19 +22,20 @@ from rest_framework.views import APIView
 from user.services import generate_unique_username
 from .models import (
     Family, Operation, Phase, Factory, Department, Document, DocumentVersion, ApprovalStep, ApprovalStepAttachment,
-    Notification,
+    Notification, ChangeType, StepAssignmentLog,
 )
 from . import conversion
 from .notifications import notify_active_steps, notify_assigned, notify_version_finished, mark_step_read
 from .permissions import HasDocAccess, IsDocAdmin, IsDocAdminOrReadOnly, CanAddDocuments
 from .roles import (
     is_doc_admin, can_add_documents, set_user_doc_groups, user_sections, member_sections, managed_sections,
-    is_managed, section_people,
+    is_managed, section_people, DOC_SECTIONS, SECTION_MANAGERS,
 )
 from .serializers import (
     FamilySerializer, OperationSerializer, PhaseSerializer, FactorySerializer, DepartmentSerializer,
     DocumentListSerializer, DocumentDetailSerializer, DocumentCreateSerializer, DocumentVersionCreateSerializer,
-    OperatorDocumentSerializer, PendingApprovalSerializer, NotificationSerializer, can_assign_step, can_decide_step,
+    OperatorDocumentSerializer, PendingApprovalSerializer, NotificationSerializer, ChangeTypeSerializer,
+    can_reassign_step, can_decide_step, reassign_reason, user_display_name,
     DocUserSerializer, DocUserGroupsSerializer, DocUserCreateSerializer,
 )
 
@@ -99,32 +100,58 @@ class DepartmentViewSet(DictionaryViewSet):
     serializer_class = DepartmentSerializer
 
 
+class ChangeTypeViewSet(DictionaryViewSet):
+    """Typy zmian nowej wersji: odczyt dla DOC, zmiany dla administratora. Użytego typu nie da się usunąć."""
+    queryset = ChangeType.objects.all()
+    serializer_class = ChangeTypeSerializer
+
+
 # --- Dokumenty (dodający / administrator) ----------------------------------
+
+def _steps_prefetch():
+    """Kroki z decyzjami, załącznikami i historią przypisań (do serialize_steps)."""
+    return Prefetch(
+        'approval_steps',
+        queryset=ApprovalStep.objects.select_related('decided_by', 'assigned_to').prefetch_related(
+            'attachments',
+            Prefetch('assignment_log', queryset=StepAssignmentLog.objects.select_related('from_user', 'to_user', 'by_user')),
+        ),
+    )
+
 
 class DocumentViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.CreateModelMixin,
                       viewsets.GenericViewSet):
     """
-    Dodający widzi swoje dokumenty, administrator wszystkie.
-    Filtry: ?search=, ?factory=, ?department=, ?status= (status najnowszej wersji).
+    Lista instrukcji dodającego / administratora.
+    ?scope=mine|all – domyślnie dodający widzi swoje, administrator wszystkie; cudze są tylko do podglądu
+    (nowe wersje dodaje twórca albo administrator).
+    Filtry: ?search=, ?factory=, ?department=, ?status=, ?family=, ?operation=, ?phase=, ?author=,
+    ?change_type=, ?date_from=, ?date_to= (ostatnia wersja), ?awaiting_section=, ?assignee= (aktywny krok).
     """
     permission_classes = [CanAddDocuments]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get_queryset(self):
-        latest_status = DocumentVersion.objects.filter(document=OuterRef('pk')).order_by('-version_number')
+        latest = DocumentVersion.objects.filter(document=OuterRef('pk')).order_by('-version_number')
         queryset = (
             Document.objects
             .select_related('phase__operation__family', 'factory', 'department', 'created_by')
             .prefetch_related(Prefetch(
                 'versions',
-                queryset=DocumentVersion.objects.select_related('uploaded_by', 'decided_by').prefetch_related(
-                    Prefetch('approval_steps', queryset=ApprovalStep.objects.select_related('decided_by', 'assigned_to').prefetch_related('attachments'))
-                ),
+                queryset=DocumentVersion.objects.select_related('uploaded_by', 'decided_by', 'change_type')
+                .prefetch_related(_steps_prefetch()),
             ))
-            .annotate(latest_status=Subquery(latest_status.values('status')[:1]))
+            .annotate(
+                latest_status=Subquery(latest.values('status')[:1]),
+                latest_change_type=Subquery(latest.values('change_type')[:1]),
+                latest_created=Subquery(latest.values('created_at')[:1]),
+            )
         )
-        if not is_doc_admin(self.request.user):
-            queryset = queryset.filter(created_by=self.request.user)
+        user = self.request.user
+        if self.action == 'list':
+            scope = self.request.query_params.get('scope') or ('all' if is_doc_admin(user) else 'mine')
+            if scope != 'all':
+                queryset = queryset.filter(created_by=user)
 
         params = self.request.query_params
         search = params.get('search', '').strip()
@@ -139,13 +166,34 @@ class DocumentViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.C
             if digits.isdigit():
                 search_q |= Q(pk=int(digits))
             queryset = queryset.filter(search_q)
-        if params.get('factory'):
-            queryset = queryset.filter(factory_id=params['factory'])
-        if params.get('department'):
-            queryset = queryset.filter(department_id=params['department'])
-        if params.get('status'):
-            queryset = queryset.filter(latest_status=params['status'])
+        simple_filters = {
+            'factory': 'factory_id', 'department': 'department_id', 'status': 'latest_status',
+            'family': 'phase__operation__family_id', 'operation': 'phase__operation_id', 'phase': 'phase_id',
+            'author': 'created_by_id', 'change_type': 'latest_change_type',
+            'date_from': 'latest_created__date__gte', 'date_to': 'latest_created__date__lte',
+        }
+        for param, lookup in simple_filters.items():
+            if params.get(param):
+                queryset = queryset.filter(**{lookup: params[param]})
         return queryset
+
+    def list(self, request, *args, **kwargs):
+        documents = list(self.get_queryset())
+        # Filtry po aktywnym kroku najnowszej wersji (kolejność kroków liczy się w Pythonie)
+        section, assignee = request.query_params.get('awaiting_section'), request.query_params.get('assignee')
+        if section or assignee:
+            def matches(document):
+                versions = list(document.versions.all())
+                if not versions or versions[0].status != DocumentVersion.Status.PENDING:
+                    return False
+                active = versions[0].active_steps()
+                return any(
+                    (not section or step.section == section)
+                    and (not assignee or str(step.assigned_to_id) == assignee)
+                    for step in active
+                )
+            documents = [document for document in documents if matches(document)]
+        return Response(DocumentListSerializer(documents, many=True, context={'request': request}).data)
 
     def get_serializer_class(self):
         if self.action == 'retrieve':
@@ -159,18 +207,29 @@ class DocumentViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, mixins.C
         serializer.is_valid(raise_exception=True)
         document = serializer.save()
         detail = self.get_queryset().get(pk=document.pk)
-        return Response(DocumentDetailSerializer(detail).data, status=status.HTTP_201_CREATED)
+        return Response(DocumentDetailSerializer(detail, context={'request': request}).data,
+                        status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=['post'], url_path='versions')
     def add_version(self, request, pk=None):
         document = self.get_object()
+        if document.created_by_id != request.user.id and not is_doc_admin(request.user):
+            return Response({'detail': 'Nową wersję może dodać tylko twórca instrukcji albo administrator.'},
+                            status=status.HTTP_403_FORBIDDEN)
         serializer = DocumentVersionCreateSerializer(
             data=request.data, context={'request': request, 'document': document}
         )
         serializer.is_valid(raise_exception=True)
         serializer.save()
         detail = self.get_queryset().get(pk=document.pk)
-        return Response(DocumentDetailSerializer(detail).data, status=status.HTTP_201_CREATED)
+        return Response(DocumentDetailSerializer(detail, context={'request': request}).data,
+                        status=status.HTTP_201_CREATED)
+
+    @action(detail=False, methods=['get'])
+    def authors(self, request):
+        """Twórcy instrukcji – do filtra listy."""
+        authors = User.objects.filter(doc_documents__isnull=False).distinct().order_by('last_name', 'first_name')
+        return Response([{'id': author.id, 'name': user_display_name(author)} for author in authors])
 
 
 def _steps_queryset():
@@ -180,7 +239,13 @@ def _steps_queryset():
             'decided_by', 'assigned_to', 'version__uploaded_by', 'version__document__factory', 'version__document__department',
             'version__document__phase__operation__family',
         )
-        .prefetch_related(Prefetch('version__approval_steps', queryset=ApprovalStep.objects.select_related('decided_by', 'assigned_to').prefetch_related('attachments')))
+        .prefetch_related(Prefetch(
+            'version__approval_steps',
+            queryset=ApprovalStep.objects.select_related('decided_by', 'assigned_to').prefetch_related(
+                'attachments',
+                Prefetch('assignment_log', queryset=StepAssignmentLog.objects.select_related('from_user', 'to_user', 'by_user')),
+            ),
+        ))
     )
 
 
@@ -208,21 +273,21 @@ class PendingApprovalsView(APIView):
 
 
 class AssignStepView(APIView):
-    """Manager sekcji wskazuje osobę, która rozpatrzy aktywny krok (może też zmienić wskazanie, dopóki trwa)."""
+    """
+    Zmiana osoby przy oczekującym kroku sekcji z managerem (body: user, comment):
+    przekierowanie przez wskazaną osobę, przypisanie przez managera sekcji, zmiana przez twórcę instrukcji
+    lub administratora. Nowa osoba musi być z tej samej sekcji. Każda zmiana trafia do logu.
+    """
     permission_classes = [HasDocAccess]
 
     def post(self, request, step_id):
         with transaction.atomic():
             step = get_object_or_404(ApprovalStep.objects.select_related('version'), pk=step_id)
-            version = DocumentVersion.objects.select_for_update().get(pk=step.version_id)
+            version = DocumentVersion.objects.select_for_update().select_related('document').get(pk=step.version_id)
             step.refresh_from_db()
 
-            if not can_assign_step(request.user, step):
-                return Response({'detail': 'Osobę do tego kroku wskazuje manager jego sekcji.'},
-                                status=status.HTTP_403_FORBIDDEN)
-            if step not in version.active_steps():
-                return Response({'detail': 'Ten krok nie czeka teraz na decyzję – nie można go przypisać.'},
-                                status=status.HTTP_400_BAD_REQUEST)
+            if not can_reassign_step(request.user, step, version):
+                return Response({'detail': 'Nie możesz zmienić osoby przy tym kroku.'}, status=status.HTTP_403_FORBIDDEN)
 
             assignee = section_people(step.section).filter(pk=request.data.get('user')).first()
             if not assignee:
@@ -230,14 +295,72 @@ class AssignStepView(APIView):
             if assignee.pk == step.assigned_to_id:
                 return Response({'detail': 'Ta osoba jest już wskazana.'}, status=status.HTTP_400_BAD_REQUEST)
 
+            previous = step.assigned_to
+            reason = reassign_reason(request.user, step, version)
             step.assigned_to = assignee
             step.assigned_by = request.user
             step.assigned_at = timezone.now()
             step.save(update_fields=['assigned_to', 'assigned_by', 'assigned_at', 'updated_at'])
-            notify_assigned(step, actor=request.user)
+            StepAssignmentLog.objects.create(
+                step=step, from_user=previous, to_user=assignee, by_user=request.user, reason=reason,
+                comment=str(request.data.get('comment', '')).strip()[:2000],
+            )
+            # Powiadomienie tylko, gdy krok już czeka na decyzję – przyszłe kroki powiadomią po swojej kolejce
+            if step in version.active_steps():
+                notify_assigned(step, actor=request.user, previous=previous)
 
         step = _steps_queryset().get(pk=step.pk)
         return Response(PendingApprovalSerializer(step, context={'request': request}).data)
+
+
+class SectionPeopleView(APIView):
+    """
+    Osoby, które mogą rozpatrzyć krok sekcji (?section=), do okna wyboru osoby.
+    Na górze proponowane: osoby, które już akceptowały tę sekcję w rodzinie (?family= albo ?document=),
+    częściej i ostatnio – wyżej; dalej alfabetycznie.
+    """
+    permission_classes = [HasDocAccess]
+
+    def get(self, request):
+        section = request.query_params.get('section', '')
+        if section not in DOC_SECTIONS:
+            return Response({'detail': 'Nieznana sekcja.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        family_id = request.query_params.get('family')
+        document_id = request.query_params.get('document')
+        if not family_id and document_id and str(document_id).isdigit():
+            family_id = Document.objects.filter(pk=document_id).values_list('phase__operation__family_id', flat=True).first()
+
+        history = {}
+        if family_id and str(family_id).isdigit():
+            steps = ApprovalStep.objects.filter(section=section, version__document__phase__operation__family_id=family_id)
+            # Wskazane osoby; przy krokach bez wskazania (sprzed zmian) – ten, kto zdecydował
+            rows = list(steps.filter(assigned_to__isnull=False).values('assigned_to')
+                        .annotate(n=Count('id'), last=Max('created_at')).values_list('assigned_to', 'n', 'last'))
+            rows += list(steps.filter(assigned_to__isnull=True, decided_by__isnull=False).values('decided_by')
+                         .annotate(n=Count('id'), last=Max('created_at')).values_list('decided_by', 'n', 'last'))
+            for user_id, count, last in rows:
+                prev_count, prev_last = history.get(user_id, (0, None))
+                history[user_id] = (prev_count + count, max(filter(None, [prev_last, last])))
+
+        manager_group = SECTION_MANAGERS.get(section)
+        people = []
+        for person in section_people(section).prefetch_related('groups'):
+            count, last = history.get(person.id, (0, None))
+            people.append({
+                'id': person.id,
+                'name': user_display_name(person),
+                'is_manager': bool(manager_group) and any(g.name == manager_group for g in person.groups.all()),
+                'suggested': count > 0,
+                'suggested_count': count,
+                '_last': last,
+            })
+        suggested = sorted((p for p in people if p['suggested']),
+                           key=lambda p: (-p['suggested_count'], -(p['_last'].timestamp() if p['_last'] else 0)))
+        others = sorted((p for p in people if not p['suggested']), key=lambda p: p['name'].lower())
+        for person in people:
+            person.pop('_last')
+        return Response(suggested + others)
 
 
 class ApprovalStepDecisionView(APIView):

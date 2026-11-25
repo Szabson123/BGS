@@ -102,6 +102,24 @@ class Document(BaseModel):
         return f"{self.number} {self.title}"
 
 
+class ChangeType(BaseModel):
+    """
+    Typ zmiany przy nowej wersji instrukcji (np. mała / jakościowa / duża) – ustala administrator.
+    `sections` to sekcje akceptujące w kolejności (klucze grup doc_*), np. ["doc_engineering", "doc_production"].
+    """
+    name = models.CharField(max_length=120, unique=True)
+    description = models.TextField(blank=True)
+    sections = models.JSONField(default=list)
+    order = models.PositiveIntegerField(default=0)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ['order', 'name']
+
+    def __str__(self):
+        return self.name
+
+
 def document_version_upload_to(instance, filename):
     return os.path.join('doc', 'documents', str(instance.document_id), f"v{instance.version_number}", filename)
 
@@ -125,6 +143,8 @@ class DocumentVersion(BaseModel):
     file = models.FileField(upload_to=document_version_upload_to)
     original_filename = models.CharField(max_length=255)
     change_description = models.TextField(blank=True)
+    # Typ zmiany (kolejne wersje); pierwsza wersja dokumentu ma ścieżkę ułożoną przez twórcę
+    change_type = models.ForeignKey(ChangeType, on_delete=models.PROTECT, null=True, blank=True, related_name='versions')
     status = models.CharField(max_length=20, choices=Status, default=Status.PENDING)
     uploaded_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='doc_uploaded_versions')
     decided_by = models.ForeignKey(
@@ -224,6 +244,30 @@ class ApprovalStepAttachment(BaseModel):
 
     def __str__(self):
         return f"{self.step} · {self.original_filename}"
+
+
+class StepAssignmentLog(models.Model):
+    """Historia osób przypisanych do kroku: wybór przy wysyłce, przypisanie managera, przekierowanie, zmiana przez twórcę."""
+    class Reason(models.TextChoices):
+        CREATED = 'CREATED', 'Wybrana przy wysyłce'
+        MANAGER = 'MANAGER', 'Przypisanie przez managera'
+        FORWARD = 'FORWARD', 'Przekierowanie'
+        AUTHOR = 'AUTHOR', 'Zmiana przez twórcę instrukcji'
+        ADMIN = 'ADMIN', 'Zmiana przez administratora'
+
+    step = models.ForeignKey(ApprovalStep, on_delete=models.CASCADE, related_name='assignment_log')
+    from_user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True, related_name='+')
+    to_user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='+')
+    by_user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='+')
+    reason = models.CharField(max_length=20, choices=Reason)
+    comment = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['created_at', 'id']
+
+    def __str__(self):
+        return f"{self.step} · {self.from_user} → {self.to_user} ({self.reason})"
 
 
 class Notification(models.Model):
