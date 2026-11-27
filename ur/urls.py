@@ -17,8 +17,6 @@ router.register(r'department-participants/(?P<department_id>\d+)', DepartmentPar
 router.register(r'production-workers', ProductionWorkerViewSet, basename='production-workers')
 router.register(r'production-teams', ProductionTeamViewSet, basename='production-teams')
 router.register(r'notes/(?P<machine_id>\d+)', MachineNotesViewSet, basename='notes')
-router.register(r'schedule-presets', WorkSchedulePresetViewSet, basename='schedule-presets')
-router.register(r'schedule-breaks', ScheduleBreakViewSet, basename='schedule-breaks')
 router.register(r'machine-lines', MachineLineNameViewSet, basename='machine-lines')
 router.register(r'cycle-guard/stations', CycleStationViewSet, basename='cycle-stations')
 
@@ -33,9 +31,6 @@ urlpatterns = [
     path('cycle-guard/agent/events/', AgentEventView.as_view(), name='cycle-agent-events'),
     path('cycle-guard/eclipse/channels/', EclipseChannelsView.as_view(), name='cycle-eclipse-channels'),
     path('cycle-guard/eclipse/num-qa/', EclipseNumQaView.as_view(), name='cycle-eclipse-num-qa'),
-
-    path('machines/<int:machine_id>/break-status/', MachineBreakStatusView.as_view(), name='machine-break-status'),
-    path('machines/<int:machine_id>/set-schedule/', MachineSetScheduleView.as_view(), name='machine-set-schedule'),
 
     path('', include(router.urls)),
     path('create/breakdown/', BreakdownCreateView.as_view(), name='craete-break-down'),
